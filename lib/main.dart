@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'annotations.dart';
 import 'launch.dart';
 import 'markdown.dart';
 import 'sessions.dart';
@@ -86,6 +87,8 @@ class _HomePageState extends State<HomePage> {
   final _expanded = <(String, int)>{};
   var _names = Map<Entry, (String, int)>.identity();
 
+  final _annotations = Annotations();
+
   final _store = SessionStore();
   late final _watcher = SessionWatcher(_scheduleLoad);
   Timer? _loadTimer;
@@ -112,6 +115,7 @@ class _HomePageState extends State<HomePage> {
     _scroll.dispose();
     _searchField.dispose();
     _searchFocus.dispose();
+    _annotations.dispose();
     super.dispose();
   }
 
@@ -232,6 +236,56 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
+  void _copyAnnotations((String, int) reply) {
+    final count = _annotations.countIn(reply);
+    Clipboard.setData(ClipboardData(text: _annotations.export(reply)));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          count == 1 ? 'Copied 1 annotation' : 'Copied $count annotations',
+        ),
+        behavior: SnackBarBehavior.floating,
+        width: 280,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  /// The button on a reply that has annotations, which copies them.
+  Widget _buildCopyButton((String, int) reply) {
+    final colors = Theme.of(context).colorScheme;
+    return ListenableBuilder(
+      listenable: _annotations,
+      builder: (context, _) {
+        final count = _annotations.countIn(reply);
+        if (count == 0) return const SizedBox.shrink();
+        // Its label is not part of the conversation's text.
+        return SelectionContainer.disabled(
+          child: OutlinedButton.icon(
+            onPressed: () => _copyAnnotations(reply),
+            icon: const Icon(Icons.copy, size: 13),
+            label: Text(
+              count == 1 ? 'Copy 1 annotation' : 'Copy $count annotations',
+            ),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: colors.onSurface,
+              iconColor: colors.tertiary,
+              backgroundColor: colors.surfaceBright,
+              side: BorderSide(color: colors.outlineVariant),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(6),
+              ),
+              textStyle: const TextStyle(fontSize: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              minimumSize: const Size(0, _MessageCard.headerButtonHeight),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   void _scrollToTop() {
     if (_scroll.hasClients) _scroll.jumpTo(0);
   }
@@ -333,6 +387,18 @@ class _HomePageState extends State<HomePage> {
             }),
           ),
           const Spacer(),
+          ListenableBuilder(
+            listenable: _annotations,
+            builder: (context, _) {
+              final count = _annotations.count;
+              if (count == 0) return const SizedBox.shrink();
+              return IconButton(
+                tooltip: 'Discard all annotations',
+                icon: const Icon(Icons.delete_sweep_outlined, size: 20),
+                onPressed: _annotations.clear,
+              );
+            },
+          ),
           const SizedBox(width: 4),
           IconButton(
             tooltip: 'Search these messages (Ctrl+F)',
@@ -411,48 +477,52 @@ class _HomePageState extends State<HomePage> {
     if (_rows.isEmpty) return _Message('No messages contain “$_query”');
     return Opacity(
       opacity: _atLatest ? 1 : 0,
-      child: SelectionArea(
-        child: ListView.builder(
-          controller: _scroll,
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-          itemCount: _rows.length,
-          itemBuilder: (context, i) {
-            final row = _rows[i];
-            final heading = row is Exchange;
-            final last = i + 1 == _rows.length || _rows[i + 1] is Exchange;
-            // An exchange is drawn as one panel, which is made of its rows:
-            // the heading rounds the top corners and the last entry the
-            // bottom ones.
-            const radius = Radius.circular(10);
-            final panel = Container(
-              width: double.infinity,
-              padding: EdgeInsets.fromLTRB(
-                14,
-                heading ? 12 : 0,
-                14,
-                last ? 10 : 0,
-              ),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surfaceContainer,
-                borderRadius: BorderRadius.vertical(
-                  top: heading ? radius : Radius.zero,
-                  bottom: last ? radius : Radius.zero,
+      child: AnnotationLayer(
+        board: _annotations,
+        scroll: _scroll,
+        child: SelectionArea(
+          child: ListView.builder(
+            controller: _scroll,
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            itemCount: _rows.length,
+            itemBuilder: (context, i) {
+              final row = _rows[i];
+              final heading = row is Exchange;
+              final last = i + 1 == _rows.length || _rows[i + 1] is Exchange;
+              // An exchange is drawn as one panel, which is made of its rows:
+              // the heading rounds the top corners and the last entry the
+              // bottom ones.
+              const radius = Radius.circular(10);
+              final panel = Container(
+                width: double.infinity,
+                padding: EdgeInsets.fromLTRB(
+                  14,
+                  heading ? 12 : 0,
+                  14,
+                  last ? 10 : 0,
                 ),
-              ),
-              child: heading
-                  ? _ExchangeHeading(row)
-                  : _buildEntry(row as Entry),
-            );
-            return Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 960),
-                child: Padding(
-                  padding: EdgeInsets.only(top: heading && i > 0 ? 22 : 0),
-                  child: panel,
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainer,
+                  borderRadius: BorderRadius.vertical(
+                    top: heading ? radius : Radius.zero,
+                    bottom: last ? radius : Radius.zero,
+                  ),
                 ),
-              ),
-            );
-          },
+                child: heading
+                    ? _ExchangeHeading(row)
+                    : _buildEntry(row as Entry),
+              );
+              return Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 960),
+                  child: Padding(
+                    padding: EdgeInsets.only(top: heading && i > 0 ? 22 : 0),
+                    child: panel,
+                  ),
+                ),
+              );
+            },
+          ),
         ),
       ),
     );
@@ -483,7 +553,12 @@ class _HomePageState extends State<HomePage> {
           icon: Icons.auto_awesome_outlined,
           author: 'Claude',
           time: entry.time,
-          child: MarkdownText(entry.text),
+          headerButton: _buildCopyButton(_names[entry]!),
+          child: Annotatable(
+            name: _names[entry]!,
+            board: _annotations,
+            child: MarkdownText(entry.text),
+          ),
         );
       case EntryKind.output:
         return Padding(
@@ -722,7 +797,16 @@ class _MessageCard extends StatelessWidget {
     required this.author,
     required this.time,
     required this.child,
+    this.headerButton,
   });
+
+  /// The header line is not as tall as this, and does not grow for the
+  /// button: text that moved down when a reply got its first annotation
+  /// would move away from the comment box.
+  static const headerButtonHeight = 24.0;
+
+  /// Shown in the middle of the header line.
+  final Widget? headerButton;
 
   final Color accent;
   final Color background;
@@ -752,25 +836,36 @@ class _MessageCard extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
+              Stack(
+                clipBehavior: Clip.none,
+                alignment: Alignment.center,
                 children: [
-                  Icon(icon, size: 15, color: accent),
-                  const SizedBox(width: 6),
-                  Text(
-                    author,
-                    style: TextStyle(
-                      fontWeight: FontWeight.w700,
-                      color: accent,
-                    ),
-                  ),
-                  const Spacer(),
-                  if (time != null)
-                    Text(
-                      _hourMinute(time!),
-                      style: _mono.copyWith(
-                        fontSize: 11,
-                        color: colors.onSurfaceVariant,
+                  Row(
+                    children: [
+                      Icon(icon, size: 15, color: accent),
+                      const SizedBox(width: 6),
+                      Text(
+                        author,
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          color: accent,
+                        ),
                       ),
+                      const Spacer(),
+                      if (time != null)
+                        Text(
+                          _hourMinute(time!),
+                          style: _mono.copyWith(
+                            fontSize: 11,
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                    ],
+                  ),
+                  if (headerButton != null)
+                    Positioned(
+                      height: headerButtonHeight,
+                      child: headerButton!,
                     ),
                 ],
               ),
