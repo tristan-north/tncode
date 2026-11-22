@@ -46,6 +46,9 @@ class Entry {
     this.images = const [],
     this.toolName,
     this.toolInput,
+    this.model,
+    this.inputTokens = 0,
+    this.outputTokens = 0,
   });
 
   final EntryKind kind;
@@ -58,6 +61,30 @@ class Entry {
   final String? toolInput;
   String? toolResult;
   bool toolError = false;
+
+  /// For assistant entries: the model that answered and the token usage of
+  /// the API response the entry came from.
+  final String? model;
+  final int inputTokens;
+  final int outputTokens;
+}
+
+class Conversation {
+  Conversation({
+    required this.entries,
+    this.gitBranch,
+    this.model,
+    this.lastActivity,
+    this.totalTokens = 0,
+  });
+
+  final List<Entry> entries;
+  final String? gitBranch;
+  final String? model;
+  final DateTime? lastActivity;
+
+  /// Input plus output tokens, summed over every API response.
+  final int totalTokens;
 }
 
 String? _env(String name) {
@@ -96,7 +123,7 @@ Future<List<ProjectGroup>> loadProjects() {
   return Isolate.run(() => _scanProjects(root));
 }
 
-Future<List<Entry>> loadConversation(String path) {
+Future<Conversation> loadConversation(String path) {
   return Isolate.run(() => _parseConversation(path));
 }
 
@@ -207,22 +234,43 @@ SessionInfo? _scanSession(File file) {
 
 const _maxResultChars = 20000;
 
-List<Entry> _parseConversation(String path) {
+Conversation _parseConversation(String path) {
   final entries = <Entry>[];
   final tools = <String, Entry>{};
+  // One API response is stored as several lines, one per content block, each
+  // repeating the response's usage; keyed by response id to count it once.
+  final tokensByResponse = <String, int>{};
+  String? gitBranch, model;
+  DateTime? lastActivity;
 
   for (final line in _lines(path)) {
     final json = _decode(line);
     if (json == null) continue;
     if (json['isSidechain'] == true || json['isMeta'] == true) continue;
-    switch (json['type']) {
-      case 'user':
-        _addUserMessage(json, entries, tools);
-      case 'assistant':
-        _addAssistantMessage(json, entries, tools);
+    final type = json['type'];
+    if (type != 'user' && type != 'assistant') continue;
+
+    if (json['gitBranch'] case final String branch when branch.isNotEmpty) {
+      gitBranch = branch;
+    }
+    lastActivity = _time(json) ?? lastActivity;
+
+    if (type == 'user') {
+      _addUserMessage(json, entries, tools);
+    } else {
+      final usage = _addAssistantMessage(json, entries, tools);
+      if (usage == null) continue;
+      model = usage.model ?? model;
+      tokensByResponse[usage.responseId] = usage.input + usage.output;
     }
   }
-  return entries;
+  return Conversation(
+    entries: entries,
+    gitBranch: gitBranch,
+    model: model,
+    lastActivity: lastActivity,
+    totalTokens: tokensByResponse.values.fold(0, (sum, n) => sum + n),
+  );
 }
 
 DateTime? _time(Map<String, dynamic> json) {
@@ -230,21 +278,54 @@ DateTime? _time(Map<String, dynamic> json) {
   return value is String ? DateTime.tryParse(value)?.toLocal() : null;
 }
 
-void _addAssistantMessage(
+typedef _Usage = ({String responseId, String? model, int input, int output});
+
+int _int(Object? value) => value is int ? value : 0;
+
+/// Adds the entries of one assistant line and returns the usage of the API
+/// response it belongs to, or null when the line records none.
+_Usage? _addAssistantMessage(
   Map<String, dynamic> json,
   List<Entry> entries,
   Map<String, Entry> tools,
 ) {
-  final content = (json['message'] as Map?)?['content'];
-  if (content is! List) return;
+  final message = json['message'];
+  if (message is! Map) return null;
+  final content = message['content'];
+  if (content is! List) return null;
   final time = _time(json);
+
+  // Claude Code writes its own notices (an API error, say) as assistant
+  // messages with the model "<synthetic>"; those have no model or usage.
+  final rawModel = message['model'];
+  final model = rawModel is String && !rawModel.startsWith('<')
+      ? rawModel
+      : null;
+  final usage = message['usage'];
+  var input = 0, output = 0;
+  if (model != null && usage is Map) {
+    input =
+        _int(usage['input_tokens']) +
+        _int(usage['cache_read_input_tokens']) +
+        _int(usage['cache_creation_input_tokens']);
+    output = _int(usage['output_tokens']);
+  }
 
   for (final block in content.whereType<Map>()) {
     switch (block['type']) {
       case 'text':
         final text = (block['text'] as String? ?? '').trim();
         if (text.isNotEmpty) {
-          entries.add(Entry(EntryKind.assistant, text, time: time));
+          entries.add(
+            Entry(
+              EntryKind.assistant,
+              text,
+              time: time,
+              model: model,
+              inputTokens: input,
+              outputTokens: output,
+            ),
+          );
         }
       case 'thinking':
         final text = (block['thinking'] as String? ?? '').trim();
@@ -266,6 +347,10 @@ void _addAssistantMessage(
         if (id is String) tools[id] = entry;
     }
   }
+
+  final id = message['id'];
+  if (id is! String || model == null) return null;
+  return (responseId: id, model: model, input: input, output: output);
 }
 
 void _addUserMessage(

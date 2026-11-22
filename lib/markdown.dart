@@ -39,6 +39,7 @@ class MarkdownText extends StatelessWidget {
           final sheet = _styleSheet ??= MarkdownStyleSheet.fromTheme(theme)
               .copyWith(
                 code: monoStyle.copyWith(
+                  color: theme.colorScheme.primary,
                   backgroundColor: theme.colorScheme.surfaceContainerHigh,
                 ),
                 codeblockDecoration: BoxDecoration(

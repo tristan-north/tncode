@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'markdown.dart';
@@ -15,7 +16,7 @@ class TncodeApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'tncode',
+      title: 'Claude Sessions',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
@@ -36,7 +37,8 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  late Future<List<ProjectGroup>> _projects = loadProjects();
+  List<ProjectGroup>? _projects;
+  Object? _error;
   SessionInfo? _selected;
   String _filter = '';
 
@@ -44,7 +46,35 @@ class _HomePageState extends State<HomePage> {
   /// every matching group open without touching this.
   final _openDirs = <String>{};
 
-  void _refresh() => setState(() => _projects = loadProjects());
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _projects = null;
+      _error = null;
+    });
+    try {
+      final projects = await loadProjects();
+      if (mounted) setState(() => _projects = projects);
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  void _toggleAll() {
+    final projects = _projects ?? const [];
+    setState(() {
+      if (_openDirs.isEmpty) {
+        _openDirs.addAll(projects.map((p) => p.dir));
+      } else {
+        _openDirs.clear();
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -53,35 +83,33 @@ class _HomePageState extends State<HomePage> {
       body: Row(
         children: [
           SizedBox(
-            width: 360,
+            width: 380,
             child: Material(
               color: colors.surfaceContainerLow,
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  _buildSidebarHeader(),
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 12, 4, 8),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            decoration: const InputDecoration(
-                              hintText: 'Filter sessions',
-                              prefixIcon: Icon(Icons.search, size: 20),
-                              isDense: true,
-                              border: OutlineInputBorder(),
-                            ),
-                            onChanged: (v) =>
-                                setState(() => _filter = v.toLowerCase()),
-                          ),
+                    padding: const EdgeInsets.fromLTRB(10, 0, 14, 10),
+                    child: TextField(
+                      style: const TextStyle(fontSize: 13),
+                      decoration: InputDecoration(
+                        hintText: 'Filter projects or sessions...',
+                        prefixIcon: const Icon(Icons.search, size: 18),
+                        isDense: true,
+                        filled: true,
+                        fillColor: colors.surface,
+                        enabledBorder: OutlineInputBorder(
+                          borderSide: BorderSide(color: colors.outlineVariant),
                         ),
-                        IconButton(
-                          tooltip: 'Reload sessions',
-                          icon: const Icon(Icons.refresh),
-                          onPressed: _refresh,
-                        ),
-                      ],
+                        border: const OutlineInputBorder(),
+                      ),
+                      onChanged: (v) =>
+                          setState(() => _filter = v.toLowerCase()),
                     ),
                   ),
+                  Divider(height: 1, color: colors.outlineVariant),
                   Expanded(child: _buildSessionList()),
                 ],
               ),
@@ -90,12 +118,7 @@ class _HomePageState extends State<HomePage> {
           VerticalDivider(width: 1, color: colors.outlineVariant),
           Expanded(
             child: _selected == null
-                ? Center(
-                    child: Text(
-                      'Select a session',
-                      style: TextStyle(color: colors.onSurfaceVariant),
-                    ),
-                  )
+                ? const _Message('Select a session')
                 : ConversationView(
                     key: ValueKey(_selected!.path),
                     session: _selected!,
@@ -106,71 +129,110 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  Widget _buildSidebarHeader() {
+    final colors = Theme.of(context).colorScheme;
+    final projects = _projects;
+    final sessionCount = projects?.fold(0, (n, p) => n + p.sessions.length);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 6, 8),
+      child: Row(
+        children: [
+          Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              color: colors.primaryContainer,
+              borderRadius: BorderRadius.circular(7),
+            ),
+            child: Icon(
+              Icons.forum_outlined,
+              size: 16,
+              color: colors.onPrimaryContainer,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Claude Sessions',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+                ),
+                Text(
+                  projects == null
+                      ? 'Loading…'
+                      : '${projects.length} projects · $sessionCount sessions',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: _openDirs.isEmpty
+                ? 'Expand all projects'
+                : 'Collapse all projects',
+            icon: Icon(
+              _openDirs.isEmpty ? Icons.unfold_more : Icons.unfold_less,
+              size: 18,
+            ),
+            onPressed: projects == null ? null : _toggleAll,
+          ),
+          IconButton(
+            tooltip: 'Reload sessions',
+            icon: const Icon(Icons.refresh, size: 18),
+            onPressed: _load,
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildSessionList() {
-    return FutureBuilder(
-      future: _projects,
-      builder: (context, snapshot) {
-        if (snapshot.hasError) {
-          return _Message('Could not read sessions:\n${snapshot.error}');
-        }
-        if (snapshot.connectionState != ConnectionState.done) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        final projects = snapshot.data!;
-        if (projects.isEmpty) {
-          final root = claudeProjectsDir();
-          return _Message(
-            root == null
-                ? 'Cannot find Claude Code sessions: HOME is not set'
-                : 'No sessions found in\n$root',
-          );
-        }
-        final tiles = <Widget>[];
-        for (final project in projects) {
-          final projectMatches = project.dir.toLowerCase().contains(_filter);
-          final sessions = projectMatches
-              ? project.sessions
-              : project.sessions
-                    .where((s) => s.title.toLowerCase().contains(_filter))
-                    .toList();
-          if (sessions.isNotEmpty) tiles.add(_buildProject(project, sessions));
-        }
-        if (tiles.isEmpty) return const _Message('No matching sessions');
-        return ListView(children: tiles);
-      },
+    if (_error != null) return _Message('Could not read sessions:\n$_error');
+    final projects = _projects;
+    if (projects == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (projects.isEmpty) {
+      final root = claudeProjectsDir();
+      return _Message(
+        root == null
+            ? 'Cannot find Claude Code sessions: HOME is not set'
+            : 'No sessions found in\n$root',
+      );
+    }
+    final groups = <Widget>[];
+    for (final project in projects) {
+      final projectMatches = project.dir.toLowerCase().contains(_filter);
+      final sessions = projectMatches
+          ? project.sessions
+          : project.sessions
+                .where((s) => s.title.toLowerCase().contains(_filter))
+                .toList();
+      if (sessions.isNotEmpty) groups.add(_buildProject(project, sessions));
+    }
+    if (groups.isEmpty) return const _Message('No matching sessions');
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      children: groups,
     );
   }
 
   Widget _buildProject(ProjectGroup project, List<SessionInfo> sessions) {
     final colors = Theme.of(context).colorScheme;
-    final dir = shortenHome(project.dir);
-    final slash = dir.lastIndexOf('/');
-    final name = slash >= 0 && slash < dir.length - 1
-        ? dir.substring(slash + 1)
-        : dir;
+    final name = project.dir
+        .split('/')
+        .lastWhere((part) => part.isNotEmpty, orElse: () => project.dir);
     final filtering = _filter.isNotEmpty;
     final open = filtering || _openDirs.contains(project.dir);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        ListTile(
-          dense: true,
-          leading: const Icon(Icons.folder_outlined, size: 20),
-          title: Text(
-            name,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontWeight: FontWeight.w600),
-          ),
-          subtitle: Text(
-            '$dir  ·  ${sessions.length}',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
-          ),
-          trailing: filtering
-              ? null
-              : Icon(open ? Icons.expand_less : Icons.expand_more, size: 20),
+        InkWell(
           onTap: filtering
               ? null
               : () => setState(() {
@@ -178,27 +240,100 @@ class _HomePageState extends State<HomePage> {
                     _openDirs.add(project.dir);
                   }
                 }),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(8, 8, 14, 8),
+            child: Row(
+              children: [
+                Icon(
+                  open ? Icons.expand_more : Icons.chevron_right,
+                  size: 18,
+                  color: colors.onSurfaceVariant,
+                ),
+                const SizedBox(width: 8),
+                Icon(Icons.folder, size: 18, color: colors.primary),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 14,
+                        ),
+                      ),
+                      Text(
+                        shortenHome(project.dir),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: _mono.copyWith(
+                          fontSize: 10.5,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 7,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: colors.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    '${sessions.length}',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
         if (open)
-          for (final session in sessions)
-            ListTile(
-              dense: true,
-              contentPadding: const EdgeInsets.only(left: 32, right: 12),
-              selected: session.path == _selected?.path,
-              selectedTileColor: colors.secondaryContainer,
-              selectedColor: colors.onSecondaryContainer,
-              title: Text(
+          for (final session in sessions) _buildSession(session),
+      ],
+    );
+  }
+
+  Widget _buildSession(SessionInfo session) {
+    final colors = Theme.of(context).colorScheme;
+    final selected = session.path == _selected?.path;
+    return Ink(
+      color: selected ? colors.secondaryContainer : null,
+      child: InkWell(
+        onTap: () => setState(() => _selected = session),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(62, 6, 14, 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
                 session.title,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: selected ? colors.onSecondaryContainer : null,
+                ),
               ),
-              subtitle: Text(
+              Text(
                 _relativeTime(session.modified),
-                style: const TextStyle(fontSize: 11),
+                style: TextStyle(fontSize: 11, color: colors.onSurfaceVariant),
               ),
-              onTap: () => setState(() => _selected = session),
-            ),
-      ],
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -235,95 +370,329 @@ class ConversationView extends StatefulWidget {
 }
 
 class _ConversationViewState extends State<ConversationView> {
-  late final Future<List<Entry>> _entries = loadConversation(
-    widget.session.path,
-  );
+  Conversation? _conversation;
+  Object? _error;
 
-  /// Which collapsible entries are open, by index, so that the state survives
-  /// the list recycling rows as they scroll out of view.
-  final _expanded = <int>{};
+  bool _showTools = false;
+  bool _searching = false;
+  String _query = '';
+
+  /// The entries that pass the Tools toggle and the search, recomputed only
+  /// when one of those changes.
+  List<Entry> _visible = const [];
+
+  /// Which collapsible entries are open. Kept here so that it survives the
+  /// list recycling rows as they scroll out of view.
+  final _expanded = <Entry>{};
+
+  final _scroll = ScrollController();
+  final _searchField = TextEditingController();
+  final _searchFocus = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    _searchField.dispose();
+    _searchFocus.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _conversation = null;
+      _error = null;
+      _expanded.clear();
+    });
+    try {
+      final conversation = await loadConversation(widget.session.path);
+      if (!mounted) return;
+      setState(() {
+        _conversation = conversation;
+        _updateVisible();
+      });
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  void _updateVisible() {
+    final entries = _conversation?.entries ?? const <Entry>[];
+    bool matches(Entry e) =>
+        e.text.toLowerCase().contains(_query) ||
+        (e.toolName?.toLowerCase().contains(_query) ?? false) ||
+        (e.toolInput?.toLowerCase().contains(_query) ?? false) ||
+        (e.toolResult?.toLowerCase().contains(_query) ?? false);
+    _visible = [
+      for (final e in entries)
+        if ((_showTools || e.kind != EntryKind.tool) &&
+            (_query.isEmpty || matches(e)))
+          e,
+    ];
+  }
+
+  void _openSearch() {
+    setState(() => _searching = true);
+    _searchFocus.requestFocus();
+  }
+
+  void _closeSearch() {
+    _searchField.clear();
+    setState(() {
+      _searching = false;
+      _query = '';
+      _updateVisible();
+    });
+  }
+
+  void _scrollToTop() {
+    if (_scroll.hasClients) _scroll.jumpTo(0);
+  }
+
+  /// The list only knows the height of rows it has built, so the far end is
+  /// an estimate that improves once we are near it: jump until it settles.
+  Future<void> _scrollToBottom() async {
+    for (var i = 0; i < 20; i++) {
+      if (!mounted || !_scroll.hasClients) return;
+      final position = _scroll.position;
+      if (i > 0 && position.pixels >= position.maxScrollExtent) return;
+      _scroll.jumpTo(position.maxScrollExtent);
+      await WidgetsBinding.instance.endOfFrame;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final session = widget.session;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(24, 14, 24, 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                session.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              const SizedBox(height: 2),
-              SelectableText(
-                '${shortenHome(session.cwd ?? '')}  ·  '
-                '${_fullTime(session.modified)}  ·  ${session.id}',
-                maxLines: 1,
-                style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
-              ),
-            ],
-          ),
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyF, control: true):
+            _openSearch,
+        if (_searching)
+          const SingleActivator(LogicalKeyboardKey.escape): _closeSearch,
+      },
+      child: Focus(
+        autofocus: true,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _buildHeader(),
+            if (_searching) _buildSearchBar(),
+            Divider(height: 1, color: colors.outlineVariant),
+            Expanded(child: _buildBody()),
+          ],
         ),
-        Divider(height: 1, color: colors.outlineVariant),
-        Expanded(
-          child: FutureBuilder(
-            future: _entries,
-            builder: (context, snapshot) {
-              if (snapshot.hasError) {
-                return _Message('Could not read session:\n${snapshot.error}');
-              }
-              if (snapshot.connectionState != ConnectionState.done) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              final entries = snapshot.data!;
-              if (entries.isEmpty) {
-                return const _Message('This session has no messages');
-              }
-              return SelectionArea(
-                child: ListView.builder(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 24,
-                    vertical: 16,
-                  ),
-                  itemCount: entries.length,
-                  itemBuilder: (context, i) => Center(
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 900),
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: _buildEntry(entries[i], i),
-                      ),
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-      ],
+      ),
     );
   }
 
-  void _toggle(int index) => setState(() {
-    if (!_expanded.remove(index)) _expanded.add(index);
+  Widget _buildHeader() {
+    final session = widget.session;
+    final conversation = _conversation;
+    final id = session.id.length > 8
+        ? '${session.id.substring(0, 8)}…'
+        : session.id;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(22, 10, 10, 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  session.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    if (session.cwd != null)
+                      _Chip(
+                        shortenHome(session.cwd!),
+                        icon: Icons.folder_outlined,
+                      ),
+                    if (conversation?.gitBranch != null)
+                      _Chip(conversation!.gitBranch!, icon: Icons.fork_right),
+                    if (conversation?.model != null)
+                      _Chip(conversation!.model!, icon: Icons.memory),
+                    Tooltip(
+                      message: session.id,
+                      child: _Chip(id, icon: Icons.tag),
+                    ),
+                    _Chip(
+                      _dateTime(conversation?.lastActivity ?? session.modified),
+                      icon: Icons.schedule,
+                    ),
+                    if (conversation != null && conversation.totalTokens > 0)
+                      _Chip(
+                        '${_tokens(conversation.totalTokens)} tokens',
+                        icon: Icons.data_usage,
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          _ToggleButton(
+            label: 'Tools',
+            icon: Icons.build_outlined,
+            tooltip: _showTools ? 'Hide tool calls' : 'Show tool calls',
+            active: _showTools,
+            onPressed: () => setState(() {
+              _showTools = !_showTools;
+              _updateVisible();
+            }),
+          ),
+          const SizedBox(width: 4),
+          IconButton(
+            tooltip: 'Search this conversation (Ctrl+F)',
+            icon: const Icon(Icons.search, size: 20),
+            isSelected: _searching,
+            onPressed: _searching ? _closeSearch : _openSearch,
+          ),
+          IconButton(
+            tooltip: 'Scroll to top',
+            icon: const Icon(Icons.vertical_align_top, size: 20),
+            onPressed: _scrollToTop,
+          ),
+          IconButton(
+            tooltip: 'Scroll to bottom',
+            icon: const Icon(Icons.vertical_align_bottom, size: 20),
+            onPressed: _scrollToBottom,
+          ),
+          IconButton(
+            tooltip: 'Reload conversation',
+            icon: const Icon(Icons.refresh, size: 20),
+            onPressed: _load,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSearchBar() {
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(22, 0, 10, 10),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _searchField,
+              focusNode: _searchFocus,
+              style: const TextStyle(fontSize: 13),
+              decoration: const InputDecoration(
+                hintText: 'Show only messages containing…',
+                prefixIcon: Icon(Icons.search, size: 18),
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+              onChanged: (value) => setState(() {
+                _query = value.trim().toLowerCase();
+                _updateVisible();
+              }),
+            ),
+          ),
+          const SizedBox(width: 12),
+          if (_query.isNotEmpty)
+            Text(
+              '${_visible.length} matching',
+              style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
+            ),
+          IconButton(
+            tooltip: 'Close search (Esc)',
+            icon: const Icon(Icons.close, size: 18),
+            onPressed: _closeSearch,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBody() {
+    if (_error != null) return _Message('Could not read session:\n$_error');
+    final conversation = _conversation;
+    if (conversation == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (conversation.entries.isEmpty) {
+      return const _Message('This session has no messages');
+    }
+    if (_visible.isEmpty) {
+      return _Message(
+        _query.isEmpty
+            ? 'Only tool calls here. Turn on Tools to see them.'
+            : 'No messages contain “$_query”',
+      );
+    }
+    return SelectionArea(
+      child: ListView.builder(
+        controller: _scroll,
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+        itemCount: _visible.length,
+        itemBuilder: (context, i) => Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 960),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: _buildEntry(_visible[i]),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _toggle(Entry entry) => setState(() {
+    if (!_expanded.remove(entry)) _expanded.add(entry);
   });
 
-  Widget _buildEntry(Entry entry, int index) {
+  Widget _buildEntry(Entry entry) {
     final colors = Theme.of(context).colorScheme;
-    final open = _expanded.contains(index);
+    final open = _expanded.contains(entry);
     switch (entry.kind) {
       case EntryKind.user:
-        return _UserBubble(entry: entry);
+        return _MessageCard(
+          accent: colors.primary,
+          background: Color.alphaBlend(
+            colors.primary.withValues(alpha: 0.07),
+            colors.surface,
+          ),
+          icon: Icons.person_outline,
+          author: 'You',
+          time: entry.time,
+          child: _UserContent(entry: entry),
+        );
       case EntryKind.assistant:
-        return Padding(
-          padding: const EdgeInsets.symmetric(vertical: 8),
+        return _MessageCard(
+          accent: colors.tertiary,
+          background: colors.surface,
+          icon: Icons.auto_awesome_outlined,
+          author: 'Claude',
+          time: entry.time,
+          chips: [
+            if (entry.model != null) _Chip(entry.model!),
+            if (entry.inputTokens + entry.outputTokens > 0)
+              _Chip(
+                '${_tokens(entry.inputTokens)} in · '
+                '${_tokens(entry.outputTokens)} out',
+              ),
+          ],
           child: MarkdownText(entry.text),
         );
       case EntryKind.output:
@@ -337,7 +706,7 @@ class _ConversationViewState extends State<ConversationView> {
           label: 'Thinking',
           summary: open ? '' : entry.text.replaceAll('\n', ' '),
           open: open,
-          onTap: () => _toggle(index),
+          onTap: () => _toggle(entry),
           child: Text(
             entry.text,
             style: TextStyle(
@@ -354,7 +723,7 @@ class _ConversationViewState extends State<ConversationView> {
           label: multiline ? 'Earlier conversation summarized' : firstLine,
           summary: '',
           open: open,
-          onTap: multiline ? () => _toggle(index) : null,
+          onTap: multiline ? () => _toggle(entry) : null,
           child: Text(
             entry.text,
             style: TextStyle(color: colors.onSurfaceVariant),
@@ -368,7 +737,7 @@ class _ConversationViewState extends State<ConversationView> {
           label: entry.toolName ?? 'Tool',
           summary: entry.text,
           open: open,
-          onTap: () => _toggle(index),
+          onTap: () => _toggle(entry),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -384,60 +753,220 @@ class _ConversationViewState extends State<ConversationView> {
   }
 }
 
-class _UserBubble extends StatelessWidget {
-  const _UserBubble({required this.entry});
+/// A small bordered label, optionally led by an icon, for a piece of metadata.
+class _Chip extends StatelessWidget {
+  const _Chip(this.text, {this.icon});
+
+  final String text;
+  final IconData? icon;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainer,
+        border: Border.all(color: colors.outlineVariant),
+        borderRadius: BorderRadius.circular(5),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (icon != null) ...[
+            Icon(icon, size: 12, color: colors.onSurfaceVariant),
+            const SizedBox(width: 5),
+          ],
+          Flexible(
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: _mono.copyWith(fontSize: 11, color: colors.onSurface),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ToggleButton extends StatelessWidget {
+  const _ToggleButton({
+    required this.label,
+    required this.icon,
+    required this.tooltip,
+    required this.active,
+    required this.onPressed,
+  });
+
+  final String label;
+  final IconData icon;
+  final String tooltip;
+  final bool active;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: tooltip,
+      child: OutlinedButton.icon(
+        onPressed: onPressed,
+        icon: Icon(icon, size: 16),
+        label: Text(label),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: active
+              ? colors.onSecondaryContainer
+              : colors.onSurface,
+          iconColor: colors.primary,
+          backgroundColor: active ? colors.secondaryContainer : null,
+          side: BorderSide(
+            color: active ? colors.primary : colors.outlineVariant,
+          ),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          visualDensity: VisualDensity.compact,
+        ),
+      ),
+    );
+  }
+}
+
+/// One message: a bordered card with a coloured left edge and a header line
+/// naming the author.
+class _MessageCard extends StatelessWidget {
+  const _MessageCard({
+    required this.accent,
+    required this.background,
+    required this.icon,
+    required this.author,
+    required this.time,
+    required this.child,
+    this.chips = const [],
+  });
+
+  final Color accent;
+  final Color background;
+  final IconData icon;
+  final String author;
+  final DateTime? time;
+  final List<Widget> chips;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Container(
+        width: double.infinity,
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          color: background,
+          border: Border.all(color: colors.outlineVariant),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Container(
+          decoration: BoxDecoration(
+            border: Border(left: BorderSide(color: accent, width: 3)),
+          ),
+          padding: const EdgeInsets.fromLTRB(15, 12, 16, 14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(icon, size: 15, color: accent),
+                      const SizedBox(width: 6),
+                      Text(
+                        author,
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          color: accent,
+                        ),
+                      ),
+                    ],
+                  ),
+                  ...chips,
+                  if (time != null)
+                    Text(
+                      _clock(time!),
+                      style: _mono.copyWith(
+                        fontSize: 11,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              child,
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+final _inlineCode = RegExp(r'`([^`\n]+)`');
+
+class _UserContent extends StatelessWidget {
+  const _UserContent({required this.entry});
 
   final Entry entry;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.only(top: 20, bottom: 8),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: colors.secondaryContainer,
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (entry.time != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Text(
-                  'You  ·  ${_fullTime(entry.time!)}',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: colors.onSecondaryContainer.withValues(alpha: 0.7),
-                  ),
+    final codeStyle = _mono.copyWith(
+      color: colors.primary,
+      backgroundColor: colors.surfaceContainerHigh,
+    );
+
+    // Prompts are shown as typed, except that `backticked` spans are set as
+    // code.
+    final text = entry.text;
+    final spans = <InlineSpan>[];
+    var end = 0;
+    for (final match in _inlineCode.allMatches(text)) {
+      spans.add(TextSpan(text: text.substring(end, match.start)));
+      spans.add(TextSpan(text: ' ${match.group(1)} ', style: codeStyle));
+      end = match.end;
+    }
+    spans.add(TextSpan(text: text.substring(end)));
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (text.isNotEmpty)
+          Text.rich(
+            TextSpan(children: spans),
+            style: const TextStyle(height: 1.45),
+          ),
+        for (final image in entry.images)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 360),
+                child: Image.memory(
+                  image,
+                  // Decode near display size; pasted screenshots are large.
+                  cacheHeight: 720,
+                  errorBuilder: (_, _, _) => const Text('[image]'),
                 ),
               ),
-            if (entry.text.isNotEmpty)
-              Text(
-                entry.text,
-                style: TextStyle(color: colors.onSecondaryContainer),
-              ),
-            for (final image in entry.images)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(6),
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 360),
-                    child: Image.memory(
-                      image,
-                      // Decode near display size; pasted screenshots are large.
-                      cacheHeight: 720,
-                      errorBuilder: (_, _, _) => const Text('[image]'),
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
+            ),
+          ),
+      ],
     );
   }
 }
@@ -465,6 +994,16 @@ class _Collapsible extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final labelText = Text(
+      label,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        fontWeight: FontWeight.w600,
+        fontSize: 13,
+        color: colors.onSurfaceVariant,
+      ),
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -481,26 +1020,26 @@ class _Collapsible extends StatelessWidget {
                   color: iconColor ?? colors.onSurfaceVariant,
                 ),
                 const SizedBox(width: 8),
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    fontSize: 13,
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    summary,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: _mono.copyWith(
-                      fontSize: 12,
-                      color: colors.onSurfaceVariant,
+                // Tool names are short and sit beside a summary that takes
+                // the remaining width; a note has only its label, which then
+                // takes that width itself.
+                if (summary.isEmpty)
+                  Expanded(child: labelText)
+                else ...[
+                  labelText,
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      summary,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: _mono.copyWith(
+                        fontSize: 12,
+                        color: colors.onSurfaceVariant,
+                      ),
                     ),
                   ),
-                ),
+                ],
                 if (onTap != null)
                   Icon(
                     open ? Icons.expand_less : Icons.expand_more,
@@ -547,8 +1086,20 @@ class _CodeBox extends StatelessWidget {
 
 String _two(int n) => n.toString().padLeft(2, '0');
 
-String _fullTime(DateTime t) =>
-    '${t.year}-${_two(t.month)}-${_two(t.day)} ${_two(t.hour)}:${_two(t.minute)}';
+String _date(DateTime t) => '${t.year}-${_two(t.month)}-${_two(t.day)}';
+
+String _clock(DateTime t) =>
+    '${_two(t.hour)}:${_two(t.minute)}:${_two(t.second)}';
+
+String _dateTime(DateTime t) => '${_date(t)} ${_clock(t)}';
+
+/// A token count the way the header and message chips show it: 140, 58.7k,
+/// 1.2M.
+String _tokens(int n) {
+  if (n < 1000) return '$n';
+  if (n < 1000000) return '${(n / 1000).toStringAsFixed(1)}k';
+  return '${(n / 1000000).toStringAsFixed(1)}M';
+}
 
 String _relativeTime(DateTime t) {
   final diff = DateTime.now().difference(t);
@@ -556,5 +1107,5 @@ String _relativeTime(DateTime t) {
   if (diff.inHours < 1) return '${diff.inMinutes} min ago';
   if (diff.inDays < 1) return '${diff.inHours} h ago';
   if (diff.inDays < 7) return '${diff.inDays} d ago';
-  return _fullTime(t);
+  return '${_date(t)} ${_two(t.hour)}:${_two(t.minute)}';
 }
