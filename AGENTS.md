@@ -19,7 +19,7 @@ has settled, writes the picture and exits. A run takes about 2 seconds.
 |---|---|
 | `--screenshot=<file.png>` | Write a picture of the app to the file, then exit |
 | `--session=<id>` or `latest` | Show only that session's prompts; the start of an id is enough |
-| `--project=<name>` | Open at that project, named by its directory, such as `tncode-fable`, instead of the one with the latest message |
+| `--project=<name>` | Open at that project, named by its directory, such as `tncode`, instead of the one with the latest message |
 | `--notes=<file>` | Keep the notes of the sidebar in this file instead of `~/.local/share/tncode/notes.json`. Give a file in a temporary directory when adding or changing notes, so that the user's own are left alone. The file need not exist |
 | `--tools` | Start with tool calls shown |
 | `--top` | Open at the oldest prompt shown instead of the latest |
