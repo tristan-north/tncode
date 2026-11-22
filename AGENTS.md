@@ -19,6 +19,7 @@ has settled, writes the picture and exits. A run takes about 2 seconds.
 |---|---|
 | `--screenshot=<file.png>` | Write a picture of the app to the file, then exit |
 | `--session=<id>` or `latest` | Show only that session's prompts; the start of an id is enough |
+| `--project=<name>` | Open at that project, named by its directory, such as `tncode-fable`, instead of the one with the latest message |
 | `--tools` | Start with tool calls shown |
 | `--top` | Open at the oldest prompt shown instead of the latest |
 | `--size=<W>x<H>` | Size of the picture, default 1540x880 |

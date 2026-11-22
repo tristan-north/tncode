@@ -54,6 +54,9 @@ class TncodeApp extends StatelessWidget {
 /// How many prompts, with their replies, the page shows.
 const _exchangeCount = 10;
 
+/// How many projects the project bar offers.
+const _projectCount = 5;
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key, required this.options});
 
@@ -67,6 +70,15 @@ class _HomePageState extends State<HomePage> {
   List<Exchange>? _exchanges;
   Object? _error;
 
+  /// The projects on the project bar, by directory: those with the latest
+  /// messages, the latest first.
+  List<String> _projects = const [];
+
+  /// The project that was asked for, and the one whose prompts are shown,
+  /// which is another until the load that follows a click on the bar is done.
+  String? _project;
+  String? _shownProject;
+
   late bool _showTools = widget.options.showTools;
 
   /// False from when the exchanges load until the view has scrolled to its
@@ -79,6 +91,9 @@ class _HomePageState extends State<HomePage> {
   /// changes: each [Exchange] that has entries passing those, as its heading,
   /// followed by those entries.
   List<Object> _rows = const [];
+
+  /// The exchanges in [_rows] that come after one of another session.
+  var _sessionStarts = Set<Exchange>.identity();
   int _entryCount = 0;
 
   /// Which collapsible entries are open, each named by its session's path and
@@ -139,7 +154,8 @@ class _HomePageState extends State<HomePage> {
     try {
       final changed = await _store.refresh();
       final first = _exchanges == null;
-      if (!mounted || (!changed && !first)) return;
+      if (!mounted) return;
+      if (!changed && !first && _project == _shownProject) return;
       var sessions = _store.sessions;
       // A session named on the command line is shown alone.
       final wanted = options.session;
@@ -149,8 +165,35 @@ class _HomePageState extends State<HomePage> {
             : sessions.where((s) => s.id.startsWith(wanted)).toList();
         if (sessions.isEmpty) options.fail('no session matches "$wanted"');
       }
-      final exchanges = await _store.recentExchanges(sessions, _exchangeCount);
+
+      // Sessions come latest first, and so do the projects made from them.
+      final all = {for (final s in sessions) s.projectDir}.toList();
+      var project = _project;
+      final named = options.project;
+      if (first && named != null) {
+        project = all.where((dir) => _projectName(dir) == named).firstOrNull;
+        if (project == null) options.fail('no project matches "$named"');
+      }
+      // The project stays the one that was picked, whichever has the latest
+      // message, and stays on the bar when five others have later ones.
+      if (!all.contains(project)) project = all.firstOrNull;
+      final projects = all.take(_projectCount).toList();
+      if (project != null && !projects.contains(project)) {
+        projects.last = project;
+      }
+      final switched = !first && project != _shownProject;
+
+      final exchanges = await _store.recentExchanges(
+        sessions.where((s) => s.projectDir == project).toList(),
+        _exchangeCount,
+      );
       if (!mounted) return;
+      // Another project was clicked meanwhile: the load that follows this
+      // one shows it.
+      if (!first && _project != _shownProject && _project != project) {
+        _stale = true;
+        return;
+      }
 
       // Most changes are to sessions that are not on the page.
       final before = _exchanges;
@@ -159,24 +202,31 @@ class _HomePageState extends State<HomePage> {
         same = identical(before![i], exchanges[i]);
       }
       // A view that is at its end stays there as messages arrive; one that
-      // has been scrolled back is left where it is.
+      // has been scrolled back is left where it is. A project opens at its
+      // end.
       final follow = first
           ? !options.openAtTop
-          : _scroll.hasClients &&
-                _scroll.position.pixels >= _scroll.position.maxScrollExtent;
+          : switched ||
+                (_scroll.hasClients &&
+                    _scroll.position.pixels >=
+                        _scroll.position.maxScrollExtent);
       setState(() {
         _exchanges = exchanges;
+        _projects = projects;
+        _project = _shownProject = project;
         _error = null;
         if (!same) _updateRows();
+        if (switched) _atLatest = false;
       });
       if (same) return;
-      // On the first load the list stays hidden until it has settled at its
-      // end, so it does not flash its first messages.
+      // On the first load, and when another project is opened, the list
+      // stays hidden until it has settled at its end, so it does not flash
+      // its first messages.
       WidgetsBinding.instance.addPostFrameCallback((_) async {
         if (follow) await _scrollToBottom();
-        if (!first) return;
+        if (!first && !switched) return;
         if (mounted) setState(() => _atLatest = true);
-        options.settled();
+        if (first) options.settled();
       });
     } catch (error) {
       if (mounted) setState(() => _error = error);
@@ -198,6 +248,8 @@ class _HomePageState extends State<HomePage> {
         (e.toolResult?.toLowerCase().contains(_query) ?? false);
     final rows = <Object>[];
     final names = Map<Entry, (String, int)>.identity();
+    final sessionStarts = Set<Exchange>.identity();
+    String? lastPath;
     var entryCount = 0;
     for (final exchange in _exchanges ?? const <Exchange>[]) {
       final path = exchange.session.path;
@@ -212,6 +264,8 @@ class _HomePageState extends State<HomePage> {
             e,
       ];
       if (entries.isEmpty) continue;
+      if (lastPath != null && lastPath != path) sessionStarts.add(exchange);
+      lastPath = path;
       rows
         ..add(exchange)
         ..addAll(entries);
@@ -219,7 +273,14 @@ class _HomePageState extends State<HomePage> {
     }
     _rows = rows;
     _names = names;
+    _sessionStarts = sessionStarts;
     _entryCount = entryCount;
+  }
+
+  void _selectProject(String project) {
+    if (project == _project) return;
+    setState(() => _project = project);
+    _load();
   }
 
   void _openSearch() {
@@ -323,7 +384,11 @@ class _HomePageState extends State<HomePage> {
                 color: colors.surfaceContainerLow,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [_buildHeader(), if (_searching) _buildSearchBar()],
+                  children: [
+                    _buildHeader(),
+                    if (_projects.isNotEmpty) _buildProjectBar(),
+                    if (_searching) _buildSearchBar(),
+                  ],
                 ),
               ),
               Divider(height: 1, color: colors.outlineVariant),
@@ -416,6 +481,26 @@ class _HomePageState extends State<HomePage> {
             icon: const Icon(Icons.vertical_align_bottom, size: 20),
             onPressed: _scrollToBottom,
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProjectBar() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+      child: Row(
+        children: [
+          for (final (i, project) in _projects.indexed) ...[
+            if (i > 0) const SizedBox(width: 8),
+            Flexible(
+              child: _ProjectButton(
+                project: project,
+                active: project == _project,
+                onPressed: () => _selectProject(project),
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -515,9 +600,14 @@ class _HomePageState extends State<HomePage> {
               return Center(
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 960),
-                  child: Padding(
-                    padding: EdgeInsets.only(top: heading && i > 0 ? 22 : 0),
-                    child: panel,
+                  child: Column(
+                    children: [
+                      if (_sessionStarts.contains(row))
+                        const _SessionBreak()
+                      else if (heading && i > 0)
+                        const SizedBox(height: 22),
+                      panel,
+                    ],
                   ),
                 ),
               );
@@ -618,8 +708,8 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-/// The line above a prompt and its reply: the project they belong to, the
-/// title of their session and when the prompt was sent.
+/// The line above a prompt and its reply: the title of their session and
+/// when the prompt was sent.
 class _ExchangeHeading extends StatelessWidget {
   const _ExchangeHeading(this.exchange);
 
@@ -629,9 +719,6 @@ class _ExchangeHeading extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final session = exchange.session;
-    final project = session.projectDir
-        .split('/')
-        .lastWhere((part) => part.isNotEmpty, orElse: () => session.projectDir);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -639,15 +726,6 @@ class _ExchangeHeading extends StatelessWidget {
           padding: const EdgeInsets.only(bottom: 4),
           child: Row(
             children: [
-              Tooltip(
-                message: shortenHome(session.projectDir),
-                child: _Chip(
-                  project,
-                  icon: Icons.folder_outlined,
-                  color: _projectColor(session.projectDir),
-                ),
-              ),
-              const SizedBox(width: 10),
               Expanded(
                 child: Text(
                   session.title,
@@ -672,6 +750,66 @@ class _ExchangeHeading extends StatelessWidget {
   }
 }
 
+/// The wavy line between a prompt and the one before it when they are of
+/// different sessions.
+class _SessionBreak extends StatelessWidget {
+  const _SessionBreak();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 20),
+      child: FractionallySizedBox(
+        widthFactor: 2 / 3,
+        child: CustomPaint(
+          size: const Size(double.infinity, 8),
+          painter: _WavePainter(
+            Theme.of(context).colorScheme.onSurfaceVariant
+                .withValues(alpha: 0.5),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _WavePainter extends CustomPainter {
+  const _WavePainter(this.color);
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Whole waves, centred, so that both ends are cut at the same point.
+    const length = 16.0;
+    final count = (size.width / length).floor();
+    final middle = size.height / 2;
+    var x = (size.width - count * length) / 2;
+    final path = Path()..moveTo(x, middle);
+    for (var i = 0; i < count; i++, x += length) {
+      path
+        ..quadraticBezierTo(x + length / 4, 0, x + length / 2, middle)
+        ..quadraticBezierTo(
+          x + length * 3 / 4,
+          size.height,
+          x + length,
+          middle,
+        );
+    }
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..strokeCap = StrokeCap.round,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_WavePainter old) => old.color != color;
+}
+
 class _Message extends StatelessWidget {
   const _Message(this.text);
 
@@ -694,52 +832,52 @@ class _Message extends StatelessWidget {
   }
 }
 
-/// A small bordered label, optionally led by an icon, for a piece of metadata.
-class _Chip extends StatelessWidget {
-  const _Chip(this.text, {this.icon, this.color});
+/// A button on the project bar, in the project's colour, filled in when its
+/// project is the one shown.
+class _ProjectButton extends StatelessWidget {
+  const _ProjectButton({
+    required this.project,
+    required this.active,
+    required this.onPressed,
+  });
 
-  final String text;
-  final IconData? icon;
-
-  /// Tints the chip. Without it the chip is neutral.
-  final Color? color;
+  /// The project's directory.
+  final String project;
+  final bool active;
+  final VoidCallback onPressed;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final color = this.color;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-      decoration: BoxDecoration(
-        color: color == null
-            ? colors.surfaceContainer
-            : color.withValues(alpha: 0.13),
-        border: Border.all(
-          color: color == null
-              ? colors.outlineVariant
-              : color.withValues(alpha: 0.45),
+    final color = _projectColor(project);
+    return Tooltip(
+      message: shortenHome(project),
+      child: OutlinedButton.icon(
+        onPressed: onPressed,
+        icon: Icon(active ? Icons.folder_open : Icons.folder_outlined),
+        label: Text(
+          _projectName(project),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
         ),
-        borderRadius: BorderRadius.circular(5),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (icon != null) ...[
-            Icon(icon, size: 12, color: color ?? colors.onSurfaceVariant),
-            const SizedBox(width: 5),
-          ],
-          Flexible(
-            child: Text(
-              text,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: _mono.copyWith(
-                fontSize: 11,
-                color: color ?? colors.onSurface,
-              ),
-            ),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: active ? color : colors.onSurfaceVariant,
+          iconColor: color,
+          iconSize: 15,
+          backgroundColor: active ? color.withValues(alpha: 0.16) : null,
+          side: BorderSide(
+            color: active
+                ? color.withValues(alpha: 0.7)
+                : colors.outlineVariant,
           ),
-        ],
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+          textStyle: _mono.copyWith(
+            fontSize: 12,
+            fontWeight: active ? FontWeight.w700 : FontWeight.w400,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          visualDensity: VisualDensity.compact,
+        ),
       ),
     );
   }
@@ -1080,6 +1218,11 @@ class _CodeBox extends StatelessWidget {
     );
   }
 }
+
+/// The name of a project's directory, without the directories it is in.
+String _projectName(String projectDir) => projectDir
+    .split('/')
+    .lastWhere((part) => part.isNotEmpty, orElse: () => projectDir);
 
 /// A colour for a project that is the same on every launch: its hue comes
 /// from a hash of the directory path. The hash is written out here because

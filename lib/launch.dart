@@ -8,6 +8,7 @@ const _usage = '''
 Usage: tncode [options]
 
   --session=<id>|latest   Show only this session (an id or the start of one).
+  --project=<name>        Open at this project (the name of its directory).
   --tools                 Start with tool calls shown.
   --top                   Open at the oldest prompt shown, not the latest.
   --screenshot=<file.png> Write a picture of the app to the file, then exit.
@@ -20,6 +21,7 @@ Usage: tncode [options]
 class LaunchOptions {
   LaunchOptions({
     this.session,
+    this.project,
     this.showTools = false,
     this.openAtTop = false,
     this.screenshot,
@@ -29,7 +31,7 @@ class LaunchOptions {
 
   /// Exits with the usage text if an argument is not understood.
   factory LaunchOptions.parse(List<String> args) {
-    String? session, screenshot;
+    String? session, project, screenshot;
     var showTools = false, openAtTop = false;
     var size = const Size(1540, 880);
     var wait = Duration.zero;
@@ -42,6 +44,8 @@ class LaunchOptions {
           : RegExp(r'^(\d+)x(\d+)$').firstMatch(value);
       if (name == '--session' && value != null && value.isNotEmpty) {
         session = value;
+      } else if (name == '--project' && value != null && value.isNotEmpty) {
+        project = value;
       } else if (name == '--screenshot' && value != null && value.isNotEmpty) {
         screenshot = value;
       } else if (name == '--size' && dimensions != null) {
@@ -62,6 +66,7 @@ class LaunchOptions {
     }
     return LaunchOptions(
       session: session,
+      project: project,
       showTools: showTools,
       openAtTop: openAtTop,
       screenshot: screenshot,
@@ -72,6 +77,10 @@ class LaunchOptions {
 
   /// `latest`, or the start of a session id.
   final String? session;
+
+  /// The name of the directory of the project to open at. Null for the one
+  /// with the latest message.
+  final String? project;
   final bool showTools;
   final bool openAtTop;
 
