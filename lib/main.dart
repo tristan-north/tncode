@@ -709,14 +709,6 @@ class _ConversationViewState extends State<ConversationView> {
           icon: Icons.auto_awesome_outlined,
           author: 'Claude',
           time: entry.time,
-          chips: [
-            if (entry.model != null) _Chip(entry.model!),
-            if (entry.inputTokens + entry.outputTokens > 0)
-              _Chip(
-                '${_tokens(entry.inputTokens)} in · '
-                '${_tokens(entry.outputTokens)} out',
-              ),
-          ],
           child: MarkdownText(entry.text),
         );
       case EntryKind.output:
@@ -880,7 +872,6 @@ class _MessageCard extends StatelessWidget {
     required this.author,
     required this.time,
     required this.child,
-    this.chips = const [],
   });
 
   final Color accent;
@@ -888,7 +879,6 @@ class _MessageCard extends StatelessWidget {
   final IconData icon;
   final String author;
   final DateTime? time;
-  final List<Widget> chips;
   final Widget child;
 
   @override
@@ -912,29 +902,21 @@ class _MessageCard extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Wrap(
-                spacing: 8,
-                runSpacing: 4,
-                crossAxisAlignment: WrapCrossAlignment.center,
+              Row(
                 children: [
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(icon, size: 15, color: accent),
-                      const SizedBox(width: 6),
-                      Text(
-                        author,
-                        style: TextStyle(
-                          fontWeight: FontWeight.w700,
-                          color: accent,
-                        ),
-                      ),
-                    ],
+                  Icon(icon, size: 15, color: accent),
+                  const SizedBox(width: 6),
+                  Text(
+                    author,
+                    style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      color: accent,
+                    ),
                   ),
-                  ...chips,
+                  const Spacer(),
                   if (time != null)
                     Text(
-                      _clock(time!),
+                      _hourMinute(time!),
                       style: _mono.copyWith(
                         fontSize: 11,
                         color: colors.onSurfaceVariant,
@@ -1169,12 +1151,13 @@ String _two(int n) => n.toString().padLeft(2, '0');
 
 String _date(DateTime t) => '${t.year}-${_two(t.month)}-${_two(t.day)}';
 
-String _clock(DateTime t) =>
-    '${_two(t.hour)}:${_two(t.minute)}:${_two(t.second)}';
+String _hourMinute(DateTime t) => '${_two(t.hour)}:${_two(t.minute)}';
+
+String _clock(DateTime t) => '${_hourMinute(t)}:${_two(t.second)}';
 
 String _dateTime(DateTime t) => '${_date(t)} ${_clock(t)}';
 
-/// A token count the way the header and message chips show it: 140, 58.7k,
+/// A token count the way the header shows it: 140, 58.7k,
 /// 1.2M.
 String _tokens(int n) {
   if (n < 1000) return '$n';
@@ -1188,5 +1171,5 @@ String _relativeTime(DateTime t) {
   if (diff.inHours < 1) return '${diff.inMinutes} min ago';
   if (diff.inDays < 1) return '${diff.inHours} h ago';
   if (diff.inDays < 7) return '${diff.inDays} d ago';
-  return '${_date(t)} ${_two(t.hour)}:${_two(t.minute)}';
+  return '${_date(t)} ${_hourMinute(t)}';
 }

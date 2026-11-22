@@ -51,9 +51,6 @@ class Entry {
     this.images = const [],
     this.toolName,
     this.toolInput,
-    this.model,
-    this.inputTokens = 0,
-    this.outputTokens = 0,
   });
 
   final EntryKind kind;
@@ -66,12 +63,6 @@ class Entry {
   final String? toolInput;
   String? toolResult;
   bool toolError = false;
-
-  /// For assistant entries: the model that answered and the token usage of
-  /// the API response the entry came from.
-  final String? model;
-  final int inputTokens;
-  final int outputTokens;
 }
 
 class Conversation {
@@ -446,16 +437,7 @@ _Usage? _addAssistantMessage(
       case 'text':
         final text = (block['text'] as String? ?? '').trim();
         if (text.isNotEmpty) {
-          entries.add(
-            Entry(
-              EntryKind.assistant,
-              text,
-              time: time,
-              model: model,
-              inputTokens: input,
-              outputTokens: output,
-            ),
-          );
+          entries.add(Entry(EntryKind.assistant, text, time: time));
         }
       case 'thinking':
         final text = (block['thinking'] as String? ?? '').trim();
