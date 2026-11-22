@@ -63,7 +63,6 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  List<SessionInfo>? _sessions;
   List<Exchange>? _exchanges;
   Object? _error;
 
@@ -162,7 +161,6 @@ class _HomePageState extends State<HomePage> {
           : _scroll.hasClients &&
                 _scroll.position.pixels >= _scroll.position.maxScrollExtent;
       setState(() {
-        _sessions = sessions;
         _exchanges = exchanges;
         _error = null;
         if (!same) _updateRows();
@@ -285,9 +283,7 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildHeader() {
     final colors = Theme.of(context).colorScheme;
-    final sessions = _sessions;
     final exchanges = _exchanges;
-    final projectCount = sessions?.map((s) => s.projectDir).toSet().length;
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
       child: Row(
@@ -315,11 +311,9 @@ class _HomePageState extends State<HomePage> {
                   style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
                 ),
                 Text(
-                  sessions == null || exchanges == null
+                  exchanges == null
                       ? 'Loading…'
-                      : 'Latest ${exchanges.length} prompts · '
-                            '$projectCount projects · '
-                            '${sessions.length} sessions',
+                      : 'Latest ${exchanges.length} prompts',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
