@@ -302,29 +302,24 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
           const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Claude Sessions',
-                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
-                ),
-                Text(
-                  exchanges == null
-                      ? 'Loading…'
-                      : 'Latest ${exchanges.length} prompts',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Claude Sessions',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+              ),
+              Text(
+                exchanges == null
+                    ? 'Loading…'
+                    : 'Latest ${exchanges.length} prompts',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 11, color: colors.onSurfaceVariant),
+              ),
+            ],
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 18),
           _ToggleButton(
             label: 'Show tool calls',
             icon: Icons.build_outlined,
@@ -337,6 +332,7 @@ class _HomePageState extends State<HomePage> {
               _updateRows();
             }),
           ),
+          const Spacer(),
           const SizedBox(width: 4),
           IconButton(
             tooltip: 'Search these messages (Ctrl+F)',

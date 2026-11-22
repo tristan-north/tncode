@@ -64,6 +64,8 @@ class MarkdownText extends StatelessWidget {
           final theme = Theme.of(context);
           final sheet = _styleSheet ??= MarkdownStyleSheet.fromTheme(theme)
               .copyWith(
+                // Replies are set a little larger than prompts.
+                textScaler: const TextScaler.linear(15 / 14),
                 code: monoStyle.copyWith(
                   color: theme.colorScheme.primary,
                   backgroundColor: theme.colorScheme.surfaceContainerHigh,
