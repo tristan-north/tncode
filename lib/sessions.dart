@@ -60,14 +60,39 @@ class Entry {
   bool toolError = false;
 }
 
-String claudeProjectsDir() {
-  final env = Platform.environment;
-  final config = env['CLAUDE_CONFIG_DIR'] ?? '${env['HOME']}/.claude';
-  return '$config/projects';
+String? _env(String name) {
+  final value = Platform.environment[name];
+  return value == null || value.isEmpty ? null : value;
+}
+
+/// The user's home directory, without a trailing slash, or null when HOME is
+/// not set.
+String? homeDir() {
+  final home = _env('HOME');
+  if (home == null || home == '/') return home;
+  return home.endsWith('/') ? home.substring(0, home.length - 1) : home;
+}
+
+/// Where Claude Code keeps its session transcripts, or null when neither
+/// CLAUDE_CONFIG_DIR nor HOME says where to look.
+String? claudeProjectsDir() {
+  final home = homeDir();
+  final config =
+      _env('CLAUDE_CONFIG_DIR') ?? (home == null ? null : '$home/.claude');
+  return config == null ? null : '$config/projects';
+}
+
+/// Replaces a leading home directory in [path] with `~`.
+String shortenHome(String path) {
+  final home = homeDir();
+  if (home == null || home == '/') return path;
+  if (path == home) return '~';
+  return path.startsWith('$home/') ? '~${path.substring(home.length)}' : path;
 }
 
 Future<List<ProjectGroup>> loadProjects() {
   final root = claudeProjectsDir();
+  if (root == null) return Future.value([]);
   return Isolate.run(() => _scanProjects(root));
 }
 
@@ -91,8 +116,6 @@ Map<String, dynamic>? _decode(String line) {
 
 // ---------------------------------------------------------------------------
 // Session list
-
-final _cwdPattern = RegExp(r'"cwd":("(?:[^"\\]|\\.)*")');
 
 List<ProjectGroup> _scanProjects(String root) {
   final rootDir = Directory(root);
@@ -127,39 +150,40 @@ List<ProjectGroup> _scanProjects(String root) {
   return groups;
 }
 
-/// Pulls the title and working directory out of a session file. Only the few
-/// lines that can hold them are JSON-decoded, so large transcripts stay cheap.
+/// Pulls the title and working directory out of a session file.
 SessionInfo? _scanSession(File file) {
   String? cwd, aiTitle, customTitle, firstPrompt, firstCommand;
   var hasConversation = false;
 
   for (final line in _lines(file.path)) {
-    if (cwd == null) {
-      final match = _cwdPattern.firstMatch(line);
-      if (match != null) cwd = jsonDecode(match.group(1)!) as String;
-    }
-    if (line.contains('"type":"ai-title"')) {
-      aiTitle = _decode(line)?['aiTitle'] as String? ?? aiTitle;
-    } else if (line.contains('"type":"custom-title"')) {
-      customTitle = _decode(line)?['customTitle'] as String? ?? customTitle;
-    } else if (firstPrompt == null && line.contains('"type":"user"')) {
-      final json = _decode(line);
-      if (json == null || json['type'] != 'user') continue;
-      if (json['isMeta'] == true || json['isSidechain'] == true) continue;
-      hasConversation = true;
-      final entries = <Entry>[];
-      _addUserMessage(json, entries, {});
-      final text = entries
-          .where((e) => e.kind == EntryKind.user && e.text.isNotEmpty)
-          .map((e) => e.text)
-          .firstOrNull;
-      // A typed prompt names the session better than a slash command such as
-      // /clear, so keep looking past commands.
-      if (text != null && text.startsWith('/')) {
-        firstCommand ??= text;
-      } else {
-        firstPrompt = text;
-      }
+    final json = _decode(line);
+    if (json == null) continue;
+    if (cwd == null && json['cwd'] is String) cwd = json['cwd'] as String;
+
+    switch (json['type']) {
+      case 'ai-title':
+        if (json['aiTitle'] is String) aiTitle = json['aiTitle'] as String;
+      case 'custom-title':
+        if (json['customTitle'] is String) {
+          customTitle = json['customTitle'] as String;
+        }
+      case 'user':
+        if (json['isMeta'] == true || json['isSidechain'] == true) continue;
+        hasConversation = true;
+        if (firstPrompt != null) continue;
+        final entries = <Entry>[];
+        _addUserMessage(json, entries, {});
+        final text = entries
+            .where((e) => e.kind == EntryKind.user && e.text.isNotEmpty)
+            .map((e) => e.text)
+            .firstOrNull;
+        // A typed prompt names the session better than a slash command such
+        // as /clear, so keep looking past commands.
+        if (text != null && text.startsWith('/')) {
+          firstCommand ??= text;
+        } else {
+          firstPrompt = text;
+        }
     }
   }
   if (!hasConversation) return null;

@@ -40,6 +40,10 @@ class _HomePageState extends State<HomePage> {
   SessionInfo? _selected;
   String _filter = '';
 
+  /// Project directories whose group the user has opened. A filter shows
+  /// every matching group open without touching this.
+  final _openDirs = <String>{};
+
   void _refresh() => setState(() => _projects = loadProjects());
 
   @override
@@ -50,7 +54,7 @@ class _HomePageState extends State<HomePage> {
         children: [
           SizedBox(
             width: 360,
-            child: ColoredBox(
+            child: Material(
               color: colors.surfaceContainerLow,
               child: Column(
                 children: [
@@ -114,7 +118,12 @@ class _HomePageState extends State<HomePage> {
         }
         final projects = snapshot.data!;
         if (projects.isEmpty) {
-          return _Message('No sessions found in\n${claudeProjectsDir()}');
+          final root = claudeProjectsDir();
+          return _Message(
+            root == null
+                ? 'Cannot find Claude Code sessions: HOME is not set'
+                : 'No sessions found in\n$root',
+          );
         }
         final tiles = <Widget>[];
         for (final project in projects) {
@@ -134,51 +143,61 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildProject(ProjectGroup project, List<SessionInfo> sessions) {
     final colors = Theme.of(context).colorScheme;
-    final dir = _shortenHome(project.dir);
+    final dir = shortenHome(project.dir);
     final slash = dir.lastIndexOf('/');
     final name = slash >= 0 && slash < dir.length - 1
         ? dir.substring(slash + 1)
         : dir;
-    return ExpansionTile(
-      // Rebuilding with a filter-specific key opens every group that has a
-      // match while a filter is typed.
-      key: PageStorageKey('${project.dir}|${_filter.isEmpty}'),
-      initiallyExpanded:
-          _filter.isNotEmpty || project.sessions.contains(_selected),
-      shape: const Border(),
-      dense: true,
-      leading: const Icon(Icons.folder_outlined, size: 20),
-      title: Text(
-        name,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontWeight: FontWeight.w600),
-      ),
-      subtitle: Text(
-        '$dir  ·  ${sessions.length}',
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
-      ),
+    final filtering = _filter.isNotEmpty;
+    final open = filtering || _openDirs.contains(project.dir);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        for (final session in sessions)
-          ListTile(
-            dense: true,
-            contentPadding: const EdgeInsets.only(left: 32, right: 12),
-            selected: session.path == _selected?.path,
-            selectedTileColor: colors.secondaryContainer,
-            selectedColor: colors.onSecondaryContainer,
-            title: Text(
-              session.title,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-            subtitle: Text(
-              _relativeTime(session.modified),
-              style: const TextStyle(fontSize: 11),
-            ),
-            onTap: () => setState(() => _selected = session),
+        ListTile(
+          dense: true,
+          leading: const Icon(Icons.folder_outlined, size: 20),
+          title: Text(
+            name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontWeight: FontWeight.w600),
           ),
+          subtitle: Text(
+            '$dir  ·  ${sessions.length}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
+          ),
+          trailing: filtering
+              ? null
+              : Icon(open ? Icons.expand_less : Icons.expand_more, size: 20),
+          onTap: filtering
+              ? null
+              : () => setState(() {
+                  if (!_openDirs.remove(project.dir)) {
+                    _openDirs.add(project.dir);
+                  }
+                }),
+        ),
+        if (open)
+          for (final session in sessions)
+            ListTile(
+              dense: true,
+              contentPadding: const EdgeInsets.only(left: 32, right: 12),
+              selected: session.path == _selected?.path,
+              selectedTileColor: colors.secondaryContainer,
+              selectedColor: colors.onSecondaryContainer,
+              title: Text(
+                session.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                _relativeTime(session.modified),
+                style: const TextStyle(fontSize: 11),
+              ),
+              onTap: () => setState(() => _selected = session),
+            ),
       ],
     );
   }
@@ -244,7 +263,7 @@ class _ConversationViewState extends State<ConversationView> {
               ),
               const SizedBox(height: 2),
               SelectableText(
-                '${_shortenHome(session.cwd ?? '')}  ·  '
+                '${shortenHome(session.cwd ?? '')}  ·  '
                 '${_fullTime(session.modified)}  ·  ${session.id}',
                 maxLines: 1,
                 style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
@@ -524,11 +543,6 @@ class _CodeBox extends StatelessWidget {
       ),
     );
   }
-}
-
-String _shortenHome(String path) {
-  final home = claudeProjectsDir().split('/.claude').first;
-  return path.startsWith(home) ? '~${path.substring(home.length)}' : path;
 }
 
 String _two(int n) => n.toString().padLeft(2, '0');
