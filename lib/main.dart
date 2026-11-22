@@ -42,6 +42,11 @@ class _HomePageState extends State<HomePage> {
   SessionInfo? _selected;
   String _filter = '';
 
+  /// Set by dragging the edge of the sidebar. Not kept between launches.
+  double _sidebarWidth = 380;
+  static const _minSidebarWidth = 220.0;
+  static const _minConversationWidth = 480.0;
+
   @override
   void initState() {
     super.initState();
@@ -63,54 +68,91 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
     return Scaffold(
-      body: Row(
-        children: [
-          SizedBox(
-            width: 380,
-            child: Material(
-              color: colors.surfaceContainerLow,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _buildSidebarHeader(),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(10, 0, 14, 10),
-                    child: TextField(
-                      style: const TextStyle(fontSize: 13),
-                      decoration: InputDecoration(
-                        hintText: 'Filter projects or sessions...',
-                        prefixIcon: const Icon(Icons.search, size: 18),
-                        isDense: true,
-                        filled: true,
-                        fillColor: colors.surface,
-                        enabledBorder: OutlineInputBorder(
-                          borderSide: BorderSide(color: colors.outlineVariant),
-                        ),
-                        border: const OutlineInputBorder(),
+      body: LayoutBuilder(
+        builder: (context, constraints) => _buildPanes(constraints.maxWidth),
+      ),
+    );
+  }
+
+  Widget _buildPanes(double windowWidth) {
+    final colors = Theme.of(context).colorScheme;
+    // Clamped on every build, so a sidebar dragged wide gives way when the
+    // window is made narrow.
+    final maxWidth = (windowWidth - _minConversationWidth).clamp(
+      _minSidebarWidth,
+      double.infinity,
+    );
+    final sidebarWidth = _sidebarWidth.clamp(_minSidebarWidth, maxWidth);
+    final panes = Row(
+      children: [
+        SizedBox(
+          width: sidebarWidth,
+          child: Material(
+            color: colors.surfaceContainerLow,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildSidebarHeader(),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 0, 14, 10),
+                  child: TextField(
+                    style: const TextStyle(fontSize: 13),
+                    decoration: InputDecoration(
+                      hintText: 'Filter projects or sessions...',
+                      prefixIcon: const Icon(Icons.search, size: 18),
+                      isDense: true,
+                      filled: true,
+                      fillColor: colors.surface,
+                      enabledBorder: OutlineInputBorder(
+                        borderSide: BorderSide(color: colors.outlineVariant),
                       ),
-                      onChanged: (v) =>
-                          setState(() => _filter = v.toLowerCase()),
+                      border: const OutlineInputBorder(),
                     ),
+                    onChanged: (v) => setState(() => _filter = v.toLowerCase()),
                   ),
-                  Divider(height: 1, color: colors.outlineVariant),
-                  Expanded(child: _buildSessionList()),
-                ],
-              ),
+                ),
+                Divider(height: 1, color: colors.outlineVariant),
+                Expanded(child: _buildSessionList()),
+              ],
             ),
           ),
-          VerticalDivider(width: 1, color: colors.outlineVariant),
-          Expanded(
-            child: _selected == null
-                ? const _Message('Select a session')
-                : ConversationView(
-                    key: ValueKey(_selected!.path),
-                    session: _selected!,
-                  ),
+        ),
+        VerticalDivider(width: 1, color: colors.outlineVariant),
+        Expanded(
+          child: _selected == null
+              ? const _Message('Select a session')
+              : ConversationView(
+                  key: ValueKey(_selected!.path),
+                  session: _selected!,
+                ),
+        ),
+      ],
+    );
+    // The drag handle lies over the divider, wider than the line so that it
+    // is easy to grab, without taking any width from either pane.
+    return Stack(
+      children: [
+        panes,
+        Positioned(
+          left: sidebarWidth - 3,
+          top: 0,
+          bottom: 0,
+          width: 7,
+          child: MouseRegion(
+            cursor: SystemMouseCursors.resizeColumn,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onHorizontalDragUpdate: (details) => setState(() {
+                _sidebarWidth = (sidebarWidth + details.delta.dx).clamp(
+                  _minSidebarWidth,
+                  maxWidth,
+                );
+              }),
+            ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
@@ -476,37 +518,46 @@ class _ConversationViewState extends State<ConversationView> {
             ),
           ),
           const SizedBox(width: 12),
-          _ToggleButton(
-            label: 'Tools',
-            icon: Icons.build_outlined,
-            tooltip: _showTools ? 'Hide tool calls' : 'Show tool calls',
-            active: _showTools,
-            onPressed: () => setState(() {
-              _showTools = !_showTools;
-              _updateVisible();
-            }),
-          ),
-          const SizedBox(width: 4),
-          IconButton(
-            tooltip: 'Search this conversation (Ctrl+F)',
-            icon: const Icon(Icons.search, size: 20),
-            isSelected: _searching,
-            onPressed: _searching ? _closeSearch : _openSearch,
-          ),
-          IconButton(
-            tooltip: 'Scroll to top',
-            icon: const Icon(Icons.vertical_align_top, size: 20),
-            onPressed: _scrollToTop,
-          ),
-          IconButton(
-            tooltip: 'Scroll to bottom',
-            icon: const Icon(Icons.vertical_align_bottom, size: 20),
-            onPressed: _scrollToBottom,
-          ),
-          IconButton(
-            tooltip: 'Reload conversation',
-            icon: const Icon(Icons.refresh, size: 20),
-            onPressed: _load,
+          // In a row of their own so that the labelled button and the icon
+          // buttons, which differ in height, share a centre line.
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _ToggleButton(
+                label: 'Show tool calls',
+                icon: Icons.build_outlined,
+                tooltip: _showTools
+                    ? 'Tool calls are shown. Click to hide them.'
+                    : 'Tool calls are hidden. Click to show them.',
+                active: _showTools,
+                onPressed: () => setState(() {
+                  _showTools = !_showTools;
+                  _updateVisible();
+                }),
+              ),
+              const SizedBox(width: 4),
+              IconButton(
+                tooltip: 'Search this conversation (Ctrl+F)',
+                icon: const Icon(Icons.search, size: 20),
+                isSelected: _searching,
+                onPressed: _searching ? _closeSearch : _openSearch,
+              ),
+              IconButton(
+                tooltip: 'Scroll to top',
+                icon: const Icon(Icons.vertical_align_top, size: 20),
+                onPressed: _scrollToTop,
+              ),
+              IconButton(
+                tooltip: 'Scroll to bottom',
+                icon: const Icon(Icons.vertical_align_bottom, size: 20),
+                onPressed: _scrollToBottom,
+              ),
+              IconButton(
+                tooltip: 'Reload conversation',
+                icon: const Icon(Icons.refresh, size: 20),
+                onPressed: _load,
+              ),
+            ],
           ),
         ],
       ),
@@ -564,7 +615,7 @@ class _ConversationViewState extends State<ConversationView> {
     if (_visible.isEmpty) {
       return _Message(
         _query.isEmpty
-            ? 'Only tool calls here. Turn on Tools to see them.'
+            ? 'Only tool calls here. Turn on “Show tool calls” to see them.'
             : 'No messages contain “$_query”',
       );
     }
