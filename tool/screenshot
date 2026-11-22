@@ -1,0 +1,24 @@
+#!/bin/bash
+# Runs the app on an X display of its own that is not shown anywhere, for
+# taking screenshots without a window appearing on the desktop:
+#
+#   tool/screenshot --screenshot=out.png --session=latest
+#
+# All arguments go to the app. Runs the debug build unless TNCODE_BUILD says
+# otherwise (TNCODE_BUILD=release).
+#
+# Xvfb is started here rather than by xvfb-run, which sleeps for three
+# seconds before it runs anything.
+
+app="$(dirname "$0")/../build/linux/x64/${TNCODE_BUILD:-debug}/bundle/tncode"
+
+# Xvfb picks a free display number and writes it to stdout when it is ready.
+exec 3< <(exec Xvfb -displayfd 1 -screen 0 1920x1200x24 -nolisten tcp 2>/dev/null)
+xvfb=$!
+trap 'kill "$xvfb" 2>/dev/null' EXIT
+if ! read -r display <&3; then
+  echo "tool/screenshot: Xvfb did not start (is xorg-x11-server-Xvfb installed?)" >&2
+  exit 1
+fi
+
+DISPLAY=":$display" GDK_BACKEND=x11 "$app" "$@"

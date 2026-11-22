@@ -1,17 +1,22 @@
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'launch.dart';
 import 'markdown.dart';
 import 'sessions.dart';
 
-void main() {
-  runApp(const TncodeApp());
+void main(List<String> args) {
+  final options = LaunchOptions.parse(args);
+  options.startTimeout();
+  runApp(TncodeApp(options: options));
 }
 
 const _mono = monoStyle;
 
 class TncodeApp extends StatelessWidget {
-  const TncodeApp({super.key});
+  const TncodeApp({super.key, required this.options});
+
+  final LaunchOptions options;
 
   @override
   Widget build(BuildContext context) {
@@ -24,13 +29,16 @@ class TncodeApp extends StatelessWidget {
           brightness: Brightness.dark,
         ),
       ),
-      home: const HomePage(),
+      builder: (context, child) => options.wrap(context, child!),
+      home: HomePage(options: options),
     );
   }
 }
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  const HomePage({super.key, required this.options});
+
+  final LaunchOptions options;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -41,6 +49,9 @@ class _HomePageState extends State<HomePage> {
   Object? _error;
   SessionInfo? _selected;
   String _filter = '';
+
+  /// Whether the command line's session has been dealt with.
+  bool _launched = false;
 
   /// Set by dragging the edge of the sidebar. Not kept between launches.
   double _sidebarWidth = 380;
@@ -60,10 +71,33 @@ class _HomePageState extends State<HomePage> {
     });
     try {
       final sessions = await loadSessions();
-      if (mounted) setState(() => _sessions = sessions);
+      if (!mounted) return;
+      setState(() => _sessions = sessions);
+      if (!_launched) _openLaunchSession(sessions);
     } catch (error) {
       if (mounted) setState(() => _error = error);
+      widget.options.fail('could not read sessions: $error');
     }
+  }
+
+  /// Opens the session named on the command line, once, when the sessions
+  /// first load.
+  void _openLaunchSession(List<SessionInfo> sessions) {
+    _launched = true;
+    final options = widget.options;
+    final wanted = options.session;
+    if (wanted == null) {
+      options.settled();
+      return;
+    }
+    final matching = wanted == 'latest'
+        ? sessions.take(1)
+        : sessions.where((s) => s.id.startsWith(wanted));
+    if (matching.isEmpty) {
+      options.fail('no session matches "$wanted"');
+      return;
+    }
+    setState(() => _selected = matching.first);
   }
 
   @override
@@ -125,6 +159,7 @@ class _HomePageState extends State<HomePage> {
               : ConversationView(
                   key: ValueKey(_selected!.path),
                   session: _selected!,
+                  options: widget.options,
                 ),
         ),
       ],
@@ -317,9 +352,14 @@ class _Message extends StatelessWidget {
 }
 
 class ConversationView extends StatefulWidget {
-  const ConversationView({super.key, required this.session});
+  const ConversationView({
+    super.key,
+    required this.session,
+    required this.options,
+  });
 
   final SessionInfo session;
+  final LaunchOptions options;
 
   @override
   State<ConversationView> createState() => _ConversationViewState();
@@ -329,7 +369,7 @@ class _ConversationViewState extends State<ConversationView> {
   Conversation? _conversation;
   Object? _error;
 
-  bool _showTools = false;
+  late bool _showTools = widget.options.showTools;
 
   /// False from when a conversation loads until the view has scrolled to
   /// its end.
@@ -380,11 +420,13 @@ class _ConversationViewState extends State<ConversationView> {
       // Open on the latest messages. The list stays hidden until it has
       // settled there, so it does not flash its first messages.
       WidgetsBinding.instance.addPostFrameCallback((_) async {
-        await _scrollToBottom();
+        if (!widget.options.openAtTop) await _scrollToBottom();
         if (mounted) setState(() => _atLatest = true);
+        widget.options.settled();
       });
     } catch (error) {
       if (mounted) setState(() => _error = error);
+      widget.options.fail('could not read session: $error');
     }
   }
 
