@@ -123,10 +123,20 @@ String shortenHome(String path) {
 }
 
 /// Every session of every project, most recently active first.
-Future<List<SessionInfo>> loadSessions() {
+///
+/// Every transcript is read in full, a few hundred megabytes of them, so
+/// the files are shared out between several isolates.
+Future<List<SessionInfo>> loadSessions() async {
   final root = claudeProjectsDir();
-  if (root == null) return Future.value([]);
-  return Isolate.run(() => _scanSessions(root));
+  if (root == null) return [];
+  final batches = await Isolate.run(
+    () => _sessionFileBatches(root, Platform.numberOfProcessors.clamp(1, 8)),
+  );
+  final scanned = await Future.wait([
+    for (final batch in batches) Isolate.run(() => _scanSessions(batch)),
+  ]);
+  return scanned.expand((sessions) => sessions).toList()
+    ..sort((a, b) => b.lastActivity.compareTo(a.lastActivity));
 }
 
 Future<Conversation> loadConversation(String path) {
@@ -150,34 +160,147 @@ Map<String, dynamic>? _decode(String line) {
 // ---------------------------------------------------------------------------
 // Session list
 
-List<SessionInfo> _scanSessions(String root) {
+/// The paths of all transcripts under [root], dealt into at most [count]
+/// batches of about the same total size.
+List<List<String>> _sessionFileBatches(String root, int count) {
   final rootDir = Directory(root);
   if (!rootDir.existsSync()) return [];
 
-  final sessions = <SessionInfo>[];
+  final sizes = <String, int>{};
   for (final dir in rootDir.listSync().whereType<Directory>()) {
-    for (final file in dir.listSync().whereType<File>()) {
-      if (!file.path.endsWith('.jsonl')) continue;
-      try {
-        final info = _scanSession(file);
-        if (info != null) sessions.add(info);
-      } on FileSystemException {
-        // Unreadable file: leave it out.
+    try {
+      for (final file in dir.listSync().whereType<File>()) {
+        if (file.path.endsWith('.jsonl')) sizes[file.path] = file.lengthSync();
       }
+    } on FileSystemException {
+      // Unreadable directory or file: leave it out.
     }
   }
-  sessions.sort((a, b) => b.lastActivity.compareTo(a.lastActivity));
+  // Largest first, each to the batch that is smallest so far.
+  final paths = sizes.keys.toList()
+    ..sort((a, b) => sizes[b]!.compareTo(sizes[a]!));
+  final batches = [for (var i = 0; i < count; i++) <String>[]];
+  final totals = List.filled(count, 0);
+  for (final path in paths) {
+    var smallest = 0;
+    for (var i = 1; i < count; i++) {
+      if (totals[i] < totals[smallest]) smallest = i;
+    }
+    batches[smallest].add(path);
+    totals[smallest] += sizes[path]!;
+  }
+  return [
+    for (final batch in batches)
+      if (batch.isNotEmpty) batch,
+  ];
+}
+
+List<SessionInfo> _scanSessions(List<String> paths) {
+  final sessions = <SessionInfo>[];
+  for (final path in paths) {
+    try {
+      final info = _scanSession(File(path));
+      if (info != null) sessions.add(info);
+    } on FileSystemException {
+      // Unreadable file: leave it out.
+    }
+  }
   return sessions;
 }
 
+// The session list needs little from each transcript, which is mostly tool
+// output and logged API requests, so only the lines that can matter are
+// decoded. They are found by searching the raw bytes for these keys. A match
+// can be a key of a nested object rather than of the line itself, which costs
+// a wasted decode and nothing else; it cannot lie inside a string, where the
+// quotes would be escaped. A transcript written with spaces after its colons
+// would not match at all.
+const _userLine = 1, _assistantLine = 2, _titleLine = 4, _cwdLine = 8;
+final _markers = {
+  ascii.encode('"type":"user"'): _userLine,
+  ascii.encode('"type":"assistant"'): _assistantLine,
+  ascii.encode('"type":"ai-title"'): _titleLine,
+  ascii.encode('"type":"custom-title"'): _titleLine,
+  ascii.encode('"cwd":"'): _cwdLine,
+};
+
+/// One line of a transcript that holds at least one of the [_markers].
+typedef _MarkedLine = ({int start, int end, int kinds});
+
+List<_MarkedLine> _markedLines(Uint8List bytes) {
+  const newline = 0x0A, quote = 0x22;
+  final lines = <_MarkedLine>[];
+  var start = 0, kinds = 0;
+  for (var i = 0; i < bytes.length; i++) {
+    final byte = bytes[i];
+    if (byte == quote) {
+      kinds |= _markerAt(bytes, i);
+    } else if (byte == newline) {
+      if (kinds != 0) lines.add((start: start, end: i, kinds: kinds));
+      start = i + 1;
+      kinds = 0;
+    }
+  }
+  if (kinds != 0) lines.add((start: start, end: bytes.length, kinds: kinds));
+  return lines;
+}
+
+/// The kind of the marker that starts at [at], or 0 when none does.
+int _markerAt(Uint8List bytes, int at) {
+  // Nearly every quote in a transcript fails this first test.
+  if (at + 1 >= bytes.length) return 0;
+  final next = bytes[at + 1];
+  if (next != 0x74 /* t */ && next != 0x63 /* c */ ) return 0;
+  marker:
+  for (final MapEntry(key: marker, value: kind) in _markers.entries) {
+    if (at + marker.length > bytes.length) continue;
+    for (var i = 1; i < marker.length; i++) {
+      if (bytes[at + i] != marker[i]) continue marker;
+    }
+    return kind;
+  }
+  return 0;
+}
+
+final _lineDecoder = const Utf8Decoder(allowMalformed: true)
+    .fuse(const JsonDecoder());
+
+Map<String, dynamic>? _decodeLine(Uint8List bytes, _MarkedLine line) {
+  try {
+    final value = _lineDecoder.convert(
+      Uint8List.sublistView(bytes, line.start, line.end),
+    );
+    return value is Map<String, dynamic> ? value : null;
+  } on FormatException {
+    return null; // A partially written last line, for example.
+  }
+}
+
+/// Whether a line is a message of the conversation itself, and so counts
+/// towards when the session was last active.
+bool _isOwnMessage(Map<String, dynamic> json) => switch (json['type']) {
+  'assistant' => json['isSidechain'] != true,
+  'user' => json['isMeta'] != true && json['isSidechain'] != true,
+  _ => false,
+};
+
 /// Pulls the title and working directory out of a session file.
 SessionInfo? _scanSession(File file) {
+  final bytes = file.readAsBytesSync();
+  final lines = _markedLines(bytes);
+
   String? cwd, aiTitle, customTitle, firstPrompt, firstCommand;
   var hasConversation = false;
-  DateTime? lastActivity;
-
-  for (final line in _lines(file.path)) {
-    final json = _decode(line);
+  for (final line in lines) {
+    // The title can be set anywhere and its last setting counts. The rest is
+    // settled early in the file: the directory by the first line that names
+    // one, the prompt by the first one typed.
+    final wanted =
+        _titleLine |
+        (cwd == null ? _cwdLine : 0) |
+        (firstPrompt == null ? _userLine : 0);
+    if (line.kinds & wanted == 0) continue;
+    final json = _decodeLine(bytes, line);
     if (json == null) continue;
     if (cwd == null && json['cwd'] is String) cwd = json['cwd'] as String;
 
@@ -188,13 +311,9 @@ SessionInfo? _scanSession(File file) {
         if (json['customTitle'] is String) {
           customTitle = json['customTitle'] as String;
         }
-      case 'assistant':
-        if (json['isSidechain'] == true) continue;
-        lastActivity = _time(json) ?? lastActivity;
       case 'user':
-        if (json['isMeta'] == true || json['isSidechain'] == true) continue;
+        if (!_isOwnMessage(json)) continue;
         hasConversation = true;
-        lastActivity = _time(json) ?? lastActivity;
         if (firstPrompt != null) continue;
         final entries = <Entry>[];
         _addUserMessage(json, entries, {});
@@ -212,6 +331,16 @@ SessionInfo? _scanSession(File file) {
     }
   }
   if (!hasConversation) return null;
+
+  // The last message is found from the end of the file.
+  DateTime? lastActivity;
+  for (final line in lines.reversed) {
+    if (line.kinds & (_userLine | _assistantLine) == 0) continue;
+    final json = _decodeLine(bytes, line);
+    if (json == null || !_isOwnMessage(json)) continue;
+    lastActivity = _time(json);
+    if (lastActivity != null) break;
+  }
 
   final name = file.uri.pathSegments.last;
   var title =
