@@ -1,0 +1,61 @@
+#!/bin/bash
+# Runs the app on an X display of its own that is not shown anywhere and
+# drives it with a fake mouse and keyboard:
+#
+#   tool/drive --top <<'END'
+#   xdotool mousemove 572 658 mousedown 1 mousemove 700 700 mousemove 990 774 mouseup 1
+#   xdotool type 'Too long'
+#   shot /path/to/out.png
+#   END
+#
+# The arguments go to the app. Standard input is a bash script that is run
+# once the app's window is up, with DISPLAY set to that display, with
+# `shot <file.png>` defined to write a picture of the window, and with a
+# short wait after each xdotool command. The app is stopped when the script
+# ends. Runs the debug build unless TNCODE_BUILD says
+# otherwise (TNCODE_BUILD=release).
+
+app="$(dirname "$0")/../build/linux/x64/${TNCODE_BUILD:-debug}/bundle/tncode"
+
+exec 3< <(exec Xvfb -displayfd 1 -screen 0 1920x1200x24 -nolisten tcp 2>/dev/null)
+xvfb=$!
+trap 'kill $pid "$xvfb" 2>/dev/null' EXIT
+if ! read -r display <&3; then
+  echo "tool/drive: Xvfb did not start (is xorg-x11-server-Xvfb installed?)" >&2
+  exit 1
+fi
+export DISPLAY=":$display" GDK_BACKEND=x11
+
+# The script is read before the app starts, which would otherwise inherit
+# standard input.
+script="$(cat)"
+"$app" "$@" < /dev/null &> /dev/null &
+pid=$!
+
+if ! window=$(timeout 10 xdotool search --sync --onlyvisible --pid "$pid" | head -1) ||
+    [ -z "$window" ]; then
+  echo "tool/drive: the app's window did not appear" >&2
+  exit 1
+fi
+# The window is at the top left of the display, so positions in it are
+# positions on the display. Nothing gives it the keyboard here, as a window
+# manager would.
+xdotool windowmove "$window" 0 0 windowfocus "$window"
+eval "$(xdotool getwindowgeometry --shell "$window")"
+# Until the sessions have loaded, the page is empty.
+sleep "${TNCODE_LOAD_WAIT:-2}"
+
+# The app acts on input a frame or more after it arrives: a box that a click
+# opens cannot be typed in at once, and typed text is not all in place when
+# the next key is pressed. So each xdotool command is followed by a wait.
+xdotool() {
+  command xdotool "$@"
+  sleep 0.3
+}
+
+shot() {
+  ffmpeg -loglevel error -y -f x11grab -video_size "${WIDTH}x${HEIGHT}" \
+    -i "$DISPLAY" -frames:v 1 "$1"
+}
+
+eval "$script"
