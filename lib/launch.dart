@@ -9,6 +9,7 @@ Usage: tncode [options]
 
   --session=<id>|latest   Show only this session (an id or the start of one).
   --project=<name>        Open at this project (the name of its directory).
+  --notes=<file>          Keep the notes in this file, not the usual one.
   --tools                 Start with tool calls shown.
   --top                   Open at the oldest prompt shown, not the latest.
   --screenshot=<file.png> Write a picture of the app to the file, then exit.
@@ -22,6 +23,7 @@ class LaunchOptions {
   LaunchOptions({
     this.session,
     this.project,
+    this.notes,
     this.showTools = false,
     this.openAtTop = false,
     this.screenshot,
@@ -31,7 +33,7 @@ class LaunchOptions {
 
   /// Exits with the usage text if an argument is not understood.
   factory LaunchOptions.parse(List<String> args) {
-    String? session, project, screenshot;
+    String? session, project, notes, screenshot;
     var showTools = false, openAtTop = false;
     var size = const Size(1540, 880);
     var wait = Duration.zero;
@@ -46,6 +48,8 @@ class LaunchOptions {
         session = value;
       } else if (name == '--project' && value != null && value.isNotEmpty) {
         project = value;
+      } else if (name == '--notes' && value != null && value.isNotEmpty) {
+        notes = value;
       } else if (name == '--screenshot' && value != null && value.isNotEmpty) {
         screenshot = value;
       } else if (name == '--size' && dimensions != null) {
@@ -67,6 +71,7 @@ class LaunchOptions {
     return LaunchOptions(
       session: session,
       project: project,
+      notes: notes,
       showTools: showTools,
       openAtTop: openAtTop,
       screenshot: screenshot,
@@ -81,6 +86,9 @@ class LaunchOptions {
   /// The name of the directory of the project to open at. Null for the one
   /// with the latest message.
   final String? project;
+
+  /// The file the notes are kept in. Null for the usual one.
+  final String? notes;
   final bool showTools;
   final bool openAtTop;
 

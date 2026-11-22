@@ -6,6 +6,7 @@ import 'package:material_ui/material_ui.dart';
 import 'annotations.dart';
 import 'launch.dart';
 import 'markdown.dart';
+import 'notes.dart';
 import 'sessions.dart';
 
 void main(List<String> args) {
@@ -104,6 +105,10 @@ class _HomePageState extends State<HomePage> {
 
   final _annotations = Annotations();
 
+  late final _notes = Notes(widget.options.notes ?? defaultNotesPath());
+  bool _showNotes = true;
+  final _noteFocus = FocusNode();
+
   final _store = SessionStore();
   late final _watcher = SessionWatcher(_scheduleLoad);
   Timer? _loadTimer;
@@ -131,6 +136,8 @@ class _HomePageState extends State<HomePage> {
     _searchField.dispose();
     _searchFocus.dispose();
     _annotations.dispose();
+    _notes.dispose();
+    _noteFocus.dispose();
     super.dispose();
   }
 
@@ -297,6 +304,13 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
+  /// Opens the notes sidebar, if it is closed, and puts the keyboard in the
+  /// box that a note is added in.
+  void _addNote() {
+    setState(() => _showNotes = true);
+    _noteFocus.requestFocus();
+  }
+
   void _copyAnnotations((String, int) reply) {
     final count = _annotations.countIn(reply);
     Clipboard.setData(ClipboardData(text: _annotations.export(reply)));
@@ -372,6 +386,8 @@ class _HomePageState extends State<HomePage> {
         bindings: {
           const SingleActivator(LogicalKeyboardKey.keyF, control: true):
               _openSearch,
+          const SingleActivator(LogicalKeyboardKey.keyN, control: true):
+              _addNote,
           if (_searching)
             const SingleActivator(LogicalKeyboardKey.escape): _closeSearch,
         },
@@ -392,7 +408,26 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
               Divider(height: 1, color: colors.outlineVariant),
-              Expanded(child: _buildBody()),
+              Expanded(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(child: _buildBody()),
+                    if (_showNotes)
+                      NotesSidebar(
+                        notes: _notes,
+                        // Notes made when there are no sessions belong to no
+                        // project.
+                        project: _project ?? '',
+                        projectName: _project == null
+                            ? ''
+                            : _projectName(_project!),
+                        projectColor: _projectColor(_project ?? ''),
+                        addFocus: _noteFocus,
+                      ),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
@@ -480,6 +515,27 @@ class _HomePageState extends State<HomePage> {
             tooltip: 'Scroll to bottom',
             icon: const Icon(Icons.vertical_align_bottom, size: 20),
             onPressed: _scrollToBottom,
+          ),
+          ListenableBuilder(
+            listenable: _notes,
+            builder: (context, _) {
+              final count = _notes.openCount(_project ?? '');
+              return IconButton(
+                tooltip: _showNotes
+                    ? 'Hide the notes'
+                    : 'Show the notes (Ctrl+N adds one)',
+                // The number of notes to do, while they are out of sight.
+                icon: Badge(
+                  isLabelVisible: !_showNotes && count > 0,
+                  label: Text('$count'),
+                  backgroundColor: Theme.of(context).colorScheme.primary,
+                  textColor: Theme.of(context).colorScheme.onPrimary,
+                  child: const Icon(Icons.checklist, size: 20),
+                ),
+                isSelected: _showNotes,
+                onPressed: () => setState(() => _showNotes = !_showNotes),
+              );
+            },
           ),
         ],
       ),
