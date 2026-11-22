@@ -14,26 +14,31 @@ class SessionInfo {
     required this.id,
     required this.path,
     required this.title,
-    required this.cwd,
-    required this.modified,
+    required this.projectDir,
+    required this.lastActivity,
   });
 
   final String id;
   final String path;
   final String title;
-  final String? cwd;
-  final DateTime modified;
+
+  /// The directory the session was started in, or the name of its folder
+  /// under the projects directory when the transcript does not record one.
+  final String projectDir;
+
+  /// When the last message of the conversation was written.
+  final DateTime lastActivity;
 }
 
-class ProjectGroup {
-  ProjectGroup({required this.dir, required this.sessions});
+/// An image attached to a message, with its pixel size when the file format
+/// is one we can read it from, so the view can reserve its space before the
+/// image has been decoded.
+class EntryImage {
+  EntryImage(this.bytes, this.width, this.height);
 
-  /// The project's working directory, or the encoded folder name when no
-  /// session recorded one.
-  final String dir;
-  final List<SessionInfo> sessions;
-
-  DateTime get modified => sessions.first.modified;
+  final Uint8List bytes;
+  final int? width;
+  final int? height;
 }
 
 enum EntryKind { user, assistant, thinking, tool, output, note }
@@ -56,7 +61,7 @@ class Entry {
   /// The message text. For tools this is the one-line summary of the call.
   final String text;
   final DateTime? time;
-  final List<Uint8List> images;
+  final List<EntryImage> images;
   final String? toolName;
   final String? toolInput;
   String? toolResult;
@@ -117,10 +122,11 @@ String shortenHome(String path) {
   return path.startsWith('$home/') ? '~${path.substring(home.length)}' : path;
 }
 
-Future<List<ProjectGroup>> loadProjects() {
+/// Every session of every project, most recently active first.
+Future<List<SessionInfo>> loadSessions() {
   final root = claudeProjectsDir();
   if (root == null) return Future.value([]);
-  return Isolate.run(() => _scanProjects(root));
+  return Isolate.run(() => _scanSessions(root));
 }
 
 Future<Conversation> loadConversation(String path) {
@@ -144,15 +150,12 @@ Map<String, dynamic>? _decode(String line) {
 // ---------------------------------------------------------------------------
 // Session list
 
-List<ProjectGroup> _scanProjects(String root) {
+List<SessionInfo> _scanSessions(String root) {
   final rootDir = Directory(root);
   if (!rootDir.existsSync()) return [];
 
-  // Keyed by working directory: Claude Code can file sessions from the same
-  // directory under more than one folder, and they belong in one group.
-  final byDir = <String, List<SessionInfo>>{};
+  final sessions = <SessionInfo>[];
   for (final dir in rootDir.listSync().whereType<Directory>()) {
-    final sessions = <SessionInfo>[];
     for (final file in dir.listSync().whereType<File>()) {
       if (!file.path.endsWith('.jsonl')) continue;
       try {
@@ -162,25 +165,16 @@ List<ProjectGroup> _scanProjects(String root) {
         // Unreadable file: leave it out.
       }
     }
-    if (sessions.isEmpty) continue;
-    final cwd = sessions.map((s) => s.cwd).nonNulls.firstOrNull;
-    final key = cwd ?? dir.uri.pathSegments.lastWhere((s) => s.isNotEmpty);
-    byDir.putIfAbsent(key, () => []).addAll(sessions);
   }
-
-  final groups = <ProjectGroup>[];
-  byDir.forEach((dir, sessions) {
-    sessions.sort((a, b) => b.modified.compareTo(a.modified));
-    groups.add(ProjectGroup(dir: dir, sessions: sessions));
-  });
-  groups.sort((a, b) => b.modified.compareTo(a.modified));
-  return groups;
+  sessions.sort((a, b) => b.lastActivity.compareTo(a.lastActivity));
+  return sessions;
 }
 
 /// Pulls the title and working directory out of a session file.
 SessionInfo? _scanSession(File file) {
   String? cwd, aiTitle, customTitle, firstPrompt, firstCommand;
   var hasConversation = false;
+  DateTime? lastActivity;
 
   for (final line in _lines(file.path)) {
     final json = _decode(line);
@@ -194,9 +188,13 @@ SessionInfo? _scanSession(File file) {
         if (json['customTitle'] is String) {
           customTitle = json['customTitle'] as String;
         }
+      case 'assistant':
+        if (json['isSidechain'] == true) continue;
+        lastActivity = _time(json) ?? lastActivity;
       case 'user':
         if (json['isMeta'] == true || json['isSidechain'] == true) continue;
         hasConversation = true;
+        lastActivity = _time(json) ?? lastActivity;
         if (firstPrompt != null) continue;
         final entries = <Entry>[];
         _addUserMessage(json, entries, {});
@@ -224,8 +222,11 @@ SessionInfo? _scanSession(File file) {
     id: name.substring(0, name.length - '.jsonl'.length),
     path: file.path,
     title: title,
-    cwd: cwd,
-    modified: file.lastModifiedSync(),
+    projectDir:
+        cwd ?? file.parent.uri.pathSegments.lastWhere((s) => s.isNotEmpty),
+    // Not the file's modification time: Claude Code rewrites old transcripts
+    // (on resume or upgrade, say) without anything having been said.
+    lastActivity: lastActivity ?? file.lastModifiedSync(),
   );
 }
 
@@ -363,7 +364,7 @@ void _addUserMessage(
   final compacted = json['isCompactSummary'] == true;
 
   final texts = <String>[];
-  final images = <Uint8List>[];
+  final images = <EntryImage>[];
   if (content is String) {
     texts.add(content);
   } else if (content is List) {
@@ -415,7 +416,7 @@ final _reminder = RegExp(
 /// Turns the raw text of a user turn into what the person actually saw or
 /// typed: slash commands, shell escapes and their output are stored wrapped in
 /// tags, and some turns are bookkeeping that never appeared on screen.
-Entry? _classifyUserText(String raw, DateTime? time, List<Uint8List> images) {
+Entry? _classifyUserText(String raw, DateTime? time, List<EntryImage> images) {
   final text = raw.replaceAll(_reminder, '').trim();
   if (text.isEmpty || text.startsWith('<local-command-caveat>')) return null;
 
@@ -449,16 +450,48 @@ Entry? _classifyUserText(String raw, DateTime? time, List<Uint8List> images) {
   return Entry(EntryKind.user, text, time: time, images: images);
 }
 
-Uint8List? _decodeImage(Map block) {
+EntryImage? _decodeImage(Map block) {
   final source = block['source'];
   if (source is! Map || source['type'] != 'base64') return null;
   final data = source['data'];
   if (data is! String) return null;
+  final Uint8List bytes;
   try {
-    return base64Decode(data);
+    bytes = base64Decode(data);
   } on FormatException {
     return null;
   }
+  final size = _imageSize(bytes);
+  return EntryImage(bytes, size?.$1, size?.$2);
+}
+
+/// Reads the pixel size from a PNG, GIF or JPEG header.
+(int, int)? _imageSize(Uint8List b) {
+  final data = ByteData.sublistView(b);
+  // PNG: signature, then the IHDR chunk holding width and height.
+  if (b.length >= 24 && b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E) {
+    return (data.getUint32(16), data.getUint32(20));
+  }
+  // GIF: "GIF", version, then little-endian width and height.
+  if (b.length >= 10 && b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46) {
+    return (data.getUint16(6, Endian.little), data.getUint16(8, Endian.little));
+  }
+  // JPEG: walk the segments to the start-of-frame one.
+  if (b.length >= 4 && b[0] == 0xFF && b[1] == 0xD8) {
+    var i = 2;
+    while (i + 9 < b.length && b[i] == 0xFF) {
+      final marker = b[i + 1];
+      final isFrame =
+          marker >= 0xC0 &&
+          marker <= 0xCF &&
+          marker != 0xC4 &&
+          marker != 0xC8 &&
+          marker != 0xCC;
+      if (isFrame) return (data.getUint16(i + 7), data.getUint16(i + 5));
+      i += 2 + data.getUint16(i + 2);
+    }
+  }
+  return null;
 }
 
 String _toolSummary(Object? input) {

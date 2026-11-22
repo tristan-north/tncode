@@ -37,14 +37,10 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  List<ProjectGroup>? _projects;
+  List<SessionInfo>? _sessions;
   Object? _error;
   SessionInfo? _selected;
   String _filter = '';
-
-  /// Project directories whose group the user has opened. A filter shows
-  /// every matching group open without touching this.
-  final _openDirs = <String>{};
 
   @override
   void initState() {
@@ -54,26 +50,15 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _load() async {
     setState(() {
-      _projects = null;
+      _sessions = null;
       _error = null;
     });
     try {
-      final projects = await loadProjects();
-      if (mounted) setState(() => _projects = projects);
+      final sessions = await loadSessions();
+      if (mounted) setState(() => _sessions = sessions);
     } catch (error) {
       if (mounted) setState(() => _error = error);
     }
-  }
-
-  void _toggleAll() {
-    final projects = _projects ?? const [];
-    setState(() {
-      if (_openDirs.isEmpty) {
-        _openDirs.addAll(projects.map((p) => p.dir));
-      } else {
-        _openDirs.clear();
-      }
-    });
   }
 
   @override
@@ -131,8 +116,8 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildSidebarHeader() {
     final colors = Theme.of(context).colorScheme;
-    final projects = _projects;
-    final sessionCount = projects?.fold(0, (n, p) => n + p.sessions.length);
+    final sessions = _sessions;
+    final projectCount = sessions?.map((s) => s.projectDir).toSet().length;
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 10, 6, 8),
       child: Row(
@@ -160,9 +145,9 @@ class _HomePageState extends State<HomePage> {
                   style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
                 ),
                 Text(
-                  projects == null
+                  sessions == null
                       ? 'Loading…'
-                      : '${projects.length} projects · $sessionCount sessions',
+                      : '$projectCount projects · ${sessions.length} sessions',
                   style: TextStyle(
                     fontSize: 11,
                     color: colors.onSurfaceVariant,
@@ -170,16 +155,6 @@ class _HomePageState extends State<HomePage> {
                 ),
               ],
             ),
-          ),
-          IconButton(
-            tooltip: _openDirs.isEmpty
-                ? 'Expand all projects'
-                : 'Collapse all projects',
-            icon: Icon(
-              _openDirs.isEmpty ? Icons.unfold_more : Icons.unfold_less,
-              size: 18,
-            ),
-            onPressed: projects == null ? null : _toggleAll,
           ),
           IconButton(
             tooltip: 'Reload sessions',
@@ -193,11 +168,11 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildSessionList() {
     if (_error != null) return _Message('Could not read sessions:\n$_error');
-    final projects = _projects;
-    if (projects == null) {
+    final sessions = _sessions;
+    if (sessions == null) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (projects.isEmpty) {
+    if (sessions.isEmpty) {
       final root = claudeProjectsDir();
       return _Message(
         root == null
@@ -205,115 +180,34 @@ class _HomePageState extends State<HomePage> {
             : 'No sessions found in\n$root',
       );
     }
-    final groups = <Widget>[];
-    for (final project in projects) {
-      final projectMatches = project.dir.toLowerCase().contains(_filter);
-      final sessions = projectMatches
-          ? project.sessions
-          : project.sessions
-                .where((s) => s.title.toLowerCase().contains(_filter))
-                .toList();
-      if (sessions.isNotEmpty) groups.add(_buildProject(project, sessions));
-    }
-    if (groups.isEmpty) return const _Message('No matching sessions');
-    return ListView(
+    final matching = _filter.isEmpty
+        ? sessions
+        : [
+            for (final s in sessions)
+              if (s.title.toLowerCase().contains(_filter) ||
+                  s.projectDir.toLowerCase().contains(_filter))
+                s,
+          ];
+    if (matching.isEmpty) return const _Message('No matching sessions');
+    return ListView.builder(
       padding: const EdgeInsets.symmetric(vertical: 6),
-      children: groups,
-    );
-  }
-
-  Widget _buildProject(ProjectGroup project, List<SessionInfo> sessions) {
-    final colors = Theme.of(context).colorScheme;
-    final name = project.dir
-        .split('/')
-        .lastWhere((part) => part.isNotEmpty, orElse: () => project.dir);
-    final filtering = _filter.isNotEmpty;
-    final open = filtering || _openDirs.contains(project.dir);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        InkWell(
-          onTap: filtering
-              ? null
-              : () => setState(() {
-                  if (!_openDirs.remove(project.dir)) {
-                    _openDirs.add(project.dir);
-                  }
-                }),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(8, 8, 14, 8),
-            child: Row(
-              children: [
-                Icon(
-                  open ? Icons.expand_more : Icons.chevron_right,
-                  size: 18,
-                  color: colors.onSurfaceVariant,
-                ),
-                const SizedBox(width: 8),
-                Icon(Icons.folder, size: 18, color: colors.primary),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w700,
-                          fontSize: 14,
-                        ),
-                      ),
-                      Text(
-                        shortenHome(project.dir),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: _mono.copyWith(
-                          fontSize: 10.5,
-                          color: colors.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 7,
-                    vertical: 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: colors.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Text(
-                    '${sessions.length}',
-                    style: const TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        if (open)
-          for (final session in sessions) _buildSession(session),
-      ],
+      itemCount: matching.length,
+      itemBuilder: (context, i) => _buildSession(matching[i]),
     );
   }
 
   Widget _buildSession(SessionInfo session) {
     final colors = Theme.of(context).colorScheme;
     final selected = session.path == _selected?.path;
+    final project = session.projectDir
+        .split('/')
+        .lastWhere((part) => part.isNotEmpty, orElse: () => session.projectDir);
     return Ink(
       color: selected ? colors.secondaryContainer : null,
       child: InkWell(
         onTap: () => setState(() => _selected = session),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(62, 6, 14, 6),
+          padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -323,12 +217,32 @@ class _HomePageState extends State<HomePage> {
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontSize: 13,
+                  fontWeight: FontWeight.w600,
                   color: selected ? colors.onSecondaryContainer : null,
                 ),
               ),
-              Text(
-                _relativeTime(session.modified),
-                style: TextStyle(fontSize: 11, color: colors.onSurfaceVariant),
+              const SizedBox(height: 5),
+              Row(
+                children: [
+                  Flexible(
+                    child: Tooltip(
+                      message: shortenHome(session.projectDir),
+                      child: _Chip(
+                        project,
+                        icon: Icons.folder_outlined,
+                        color: _projectColor(session.projectDir),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    _relativeTime(session.lastActivity),
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
@@ -374,6 +288,10 @@ class _ConversationViewState extends State<ConversationView> {
   Object? _error;
 
   bool _showTools = false;
+
+  /// False from when a conversation loads until the view has scrolled to
+  /// its end.
+  bool _atLatest = false;
   bool _searching = false;
   String _query = '';
 
@@ -415,6 +333,13 @@ class _ConversationViewState extends State<ConversationView> {
       setState(() {
         _conversation = conversation;
         _updateVisible();
+        _atLatest = false;
+      });
+      // Open on the latest messages. The list stays hidden until it has
+      // settled there, so it does not flash its first messages.
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        await _scrollToBottom();
+        if (mounted) setState(() => _atLatest = true);
       });
     } catch (error) {
       if (mounted) setState(() => _error = error);
@@ -455,12 +380,13 @@ class _ConversationViewState extends State<ConversationView> {
   }
 
   /// The list only knows the height of rows it has built, so the far end is
-  /// an estimate that improves once we are near it: jump until it settles.
+  /// an estimate, which can fall short of or overshoot the real end and is
+  /// corrected once the rows there are built: jump until it settles.
   Future<void> _scrollToBottom() async {
     for (var i = 0; i < 20; i++) {
       if (!mounted || !_scroll.hasClients) return;
       final position = _scroll.position;
-      if (i > 0 && position.pixels >= position.maxScrollExtent) return;
+      if (i > 0 && position.pixels == position.maxScrollExtent) return;
       _scroll.jumpTo(position.maxScrollExtent);
       await WidgetsBinding.instance.endOfFrame;
     }
@@ -520,11 +446,11 @@ class _ConversationViewState extends State<ConversationView> {
                   spacing: 6,
                   runSpacing: 6,
                   children: [
-                    if (session.cwd != null)
-                      _Chip(
-                        shortenHome(session.cwd!),
-                        icon: Icons.folder_outlined,
-                      ),
+                    _Chip(
+                      shortenHome(session.projectDir),
+                      icon: Icons.folder_outlined,
+                      color: _projectColor(session.projectDir),
+                    ),
                     if (conversation?.gitBranch != null)
                       _Chip(conversation!.gitBranch!, icon: Icons.fork_right),
                     if (conversation?.model != null)
@@ -534,7 +460,9 @@ class _ConversationViewState extends State<ConversationView> {
                       child: _Chip(id, icon: Icons.tag),
                     ),
                     _Chip(
-                      _dateTime(conversation?.lastActivity ?? session.modified),
+                      _dateTime(
+                        conversation?.lastActivity ?? session.lastActivity,
+                      ),
                       icon: Icons.schedule,
                     ),
                     if (conversation != null && conversation.totalTokens > 0)
@@ -640,17 +568,20 @@ class _ConversationViewState extends State<ConversationView> {
             : 'No messages contain “$_query”',
       );
     }
-    return SelectionArea(
-      child: ListView.builder(
-        controller: _scroll,
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-        itemCount: _visible.length,
-        itemBuilder: (context, i) => Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 960),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: _buildEntry(_visible[i]),
+    return Opacity(
+      opacity: _atLatest ? 1 : 0,
+      child: SelectionArea(
+        child: ListView.builder(
+          controller: _scroll,
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          itemCount: _visible.length,
+          itemBuilder: (context, i) => Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 960),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: _buildEntry(_visible[i]),
+              ),
             ),
           ),
         ),
@@ -755,26 +686,36 @@ class _ConversationViewState extends State<ConversationView> {
 
 /// A small bordered label, optionally led by an icon, for a piece of metadata.
 class _Chip extends StatelessWidget {
-  const _Chip(this.text, {this.icon});
+  const _Chip(this.text, {this.icon, this.color});
 
   final String text;
   final IconData? icon;
 
+  /// Tints the chip. Without it the chip is neutral.
+  final Color? color;
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final color = this.color;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
       decoration: BoxDecoration(
-        color: colors.surfaceContainer,
-        border: Border.all(color: colors.outlineVariant),
+        color: color == null
+            ? colors.surfaceContainer
+            : color.withValues(alpha: 0.13),
+        border: Border.all(
+          color: color == null
+              ? colors.outlineVariant
+              : color.withValues(alpha: 0.45),
+        ),
         borderRadius: BorderRadius.circular(5),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           if (icon != null) ...[
-            Icon(icon, size: 12, color: colors.onSurfaceVariant),
+            Icon(icon, size: 12, color: color ?? colors.onSurfaceVariant),
             const SizedBox(width: 5),
           ],
           Flexible(
@@ -782,7 +723,10 @@ class _Chip extends StatelessWidget {
               text,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: _mono.copyWith(fontSize: 11, color: colors.onSurface),
+              style: _mono.copyWith(
+                fontSize: 11,
+                color: color ?? colors.onSurface,
+              ),
             ),
           ),
         ],
@@ -953,20 +897,53 @@ class _UserContent extends StatelessWidget {
         for (final image in entry.images)
           Padding(
             padding: const EdgeInsets.only(top: 8),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(6),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 360),
-                child: Image.memory(
-                  image,
-                  // Decode near display size; pasted screenshots are large.
-                  cacheHeight: 720,
-                  errorBuilder: (_, _, _) => const Text('[image]'),
-                ),
-              ),
-            ),
+            child: _MessageImage(image),
           ),
       ],
+    );
+  }
+}
+
+/// An attached image, at most [_maxHeight] tall. Its box is sized from the
+/// image's known dimensions rather than from the decoded image, which arrives
+/// a few frames late: a box that grew then would push the conversation down
+/// after the view had scrolled to its end.
+class _MessageImage extends StatelessWidget {
+  const _MessageImage(this.image);
+
+  final EntryImage image;
+
+  static const _maxHeight = 360.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final width = image.width, height = image.height;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        var size = const Size(_maxHeight, _maxHeight);
+        if (width != null && height != null && width > 0 && height > 0) {
+          final scale = [
+            1.0,
+            constraints.maxWidth / width,
+            _maxHeight / height,
+          ].reduce((a, b) => a < b ? a : b);
+          size = Size(width * scale, height * scale);
+        }
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(6),
+          child: SizedBox.fromSize(
+            size: size,
+            child: Image.memory(
+              image.bytes,
+              // Decode near display size; pasted screenshots are large.
+              cacheHeight: 720,
+              fit: BoxFit.contain,
+              alignment: Alignment.topLeft,
+              errorBuilder: (_, _, _) => const Text('[image]'),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -1082,6 +1059,17 @@ class _CodeBox extends StatelessWidget {
       ),
     );
   }
+}
+
+/// A colour for a project that is the same on every launch: its hue comes
+/// from a hash of the directory path. The hash is written out here because
+/// [String.hashCode] is not guaranteed to be stable between runs.
+Color _projectColor(String projectDir) {
+  var hash = 0x811c9dc5; // FNV-1a, 32 bit
+  for (final unit in projectDir.codeUnits) {
+    hash = ((hash ^ unit) * 0x01000193) & 0xffffffff;
+  }
+  return HSLColor.fromAHSL(1, hash % 360, 0.65, 0.72).toColor();
 }
 
 String _two(int n) => n.toString().padLeft(2, '0');
