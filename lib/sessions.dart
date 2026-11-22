@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
@@ -113,21 +114,152 @@ String shortenHome(String path) {
   return path.startsWith('$home/') ? '~${path.substring(home.length)}' : path;
 }
 
-/// Every session of every project, most recently active first.
-///
-/// Every transcript is read in full, a few hundred megabytes of them, so
-/// the files are shared out between several isolates.
-Future<List<SessionInfo>> loadSessions() async {
-  final root = claudeProjectsDir();
-  if (root == null) return [];
-  final batches = await Isolate.run(
-    () => _sessionFileBatches(root, Platform.numberOfProcessors.clamp(1, 8)),
-  );
-  final scanned = await Future.wait([
-    for (final batch in batches) Isolate.run(() => _scanSessions(batch)),
-  ]);
-  return scanned.expand((sessions) => sessions).toList()
-    ..sort((a, b) => b.lastActivity.compareTo(a.lastActivity));
+/// The size and modification time of a transcript, which tell whether it has
+/// to be read again.
+typedef _Stamp = ({int size, int modified});
+
+/// The sessions of every project, and their latest exchanges. It remembers
+/// what it has read, so that a [refresh] reads only the transcripts that
+/// have changed since the one before.
+class SessionStore {
+  final _scanned = <String, ({_Stamp stamp, SessionInfo? info})>{};
+  final _parsed = <String, ({SessionInfo info, List<Exchange> exchanges})>{};
+  bool _loaded = false;
+
+  /// Every session, most recently active first, as of the last [refresh].
+  List<SessionInfo> sessions = const [];
+
+  /// Looks for transcripts that are new, changed or gone and brings
+  /// [sessions] up to date. Returns whether there were any.
+  ///
+  /// The first call reads every transcript in full, a few hundred megabytes
+  /// of them, so the files are shared out between several isolates.
+  Future<bool> refresh() async {
+    final root = claudeProjectsDir();
+    final stamps = root == null ? <String, _Stamp>{} : await _runStamps(root);
+    final changed = {
+      for (final MapEntry(key: path, value: stamp) in stamps.entries)
+        if (_scanned[path]?.stamp != stamp) path: stamp.size,
+    };
+    final removed = [
+      for (final path in _scanned.keys)
+        if (!stamps.containsKey(path)) path,
+    ];
+    if (_loaded && changed.isEmpty && removed.isEmpty) return false;
+
+    final batches = _batches(changed, Platform.numberOfProcessors.clamp(1, 8));
+    final scanned = await Future.wait(batches.map(_runScan));
+    final infos = {
+      for (final info in scanned.expand((sessions) => sessions))
+        info.path: info,
+    };
+    removed.forEach(_scanned.remove);
+    for (final path in changed.keys) {
+      _scanned[path] = (stamp: stamps[path]!, info: infos[path]);
+    }
+    sessions = [for (final (:info, stamp: _) in _scanned.values) ?info]
+      ..sort((a, b) => b.lastActivity.compareTo(a.lastActivity));
+    _loaded = true;
+    return true;
+  }
+
+  /// The [count] most recent exchanges of [among], which must be some of
+  /// [sessions] in the same order. The oldest exchange comes first.
+  ///
+  /// The exchanges of a session that has not changed since the last call are
+  /// the same objects as then.
+  Future<List<Exchange>> recentExchanges(
+    List<SessionInfo> among,
+    int count,
+  ) async {
+    final recent = <Exchange>[];
+    final used = <String>{};
+    for (final session in among) {
+      // No prompt of a session is later than the session's last message, so
+      // once this session cannot displace anything, neither can a later one.
+      if (recent.length >= count &&
+          !recent[count - 1].time.isBefore(session.lastActivity)) {
+        break;
+      }
+      used.add(session.path);
+      var parsed = _parsed[session.path];
+      if (parsed == null || !identical(parsed.info, session)) {
+        parsed = (info: session, exchanges: await _runExchanges(session));
+        _parsed[session.path] = parsed;
+      }
+      recent.addAll(parsed.exchanges);
+      recent.sort((a, b) {
+        final byTime = b.time.compareTo(a.time);
+        return byTime != 0 ? byTime : b.index.compareTo(a.index);
+      });
+      if (recent.length > count) recent.length = count;
+    }
+    // Only the sessions that were needed this time are likely to be needed
+    // next time.
+    _parsed.removeWhere((path, _) => !used.contains(path));
+    return recent.reversed.toList();
+  }
+}
+
+// The work for other isolates is started from top-level functions, so that
+// the closures sent to them cannot capture the store.
+
+Future<Map<String, _Stamp>> _runStamps(String root) =>
+    Isolate.run(() => _sessionFileStamps(root));
+
+Future<List<SessionInfo>> _runScan(List<String> paths) =>
+    Isolate.run(() => _scanSessions(paths));
+
+Future<List<Exchange>> _runExchanges(SessionInfo session) =>
+    Isolate.run(() => _exchanges(session));
+
+/// Tells when a transcript may have changed, by watching the projects
+/// directory and each project's directory in it.
+class SessionWatcher {
+  SessionWatcher(this.onChange) {
+    final root = claudeProjectsDir();
+    if (root == null) return;
+    _watch(root, isRoot: true);
+    try {
+      Directory(root)
+          .listSync()
+          .whereType<Directory>()
+          .forEach((dir) => _watch(dir.path));
+    } on FileSystemException {
+      // No projects directory yet.
+    }
+  }
+
+  /// Called for every change, which can be many times a second.
+  final void Function() onChange;
+
+  final _watches = <String, StreamSubscription<FileSystemEvent>>{};
+
+  void _watch(String dir, {bool isRoot = false}) {
+    if (_watches.containsKey(dir)) return;
+    void stop([Object? _]) => _watches.remove(dir)?.cancel();
+    _watches[dir] = Directory(dir).watch().listen(
+      (event) {
+        if (isRoot) {
+          if (event.isDirectory && event is! FileSystemDeleteEvent) {
+            _watch(event.path);
+          }
+        } else if (!event.path.endsWith('.jsonl')) {
+          return;
+        }
+        onChange();
+      },
+      onError: stop,
+      onDone: stop,
+    );
+  }
+
+  void dispose() {
+    for (final watch in _watches.values) {
+      watch.cancel();
+    }
+    _watches.clear();
+  }
 }
 
 /// A prompt and everything that followed it, up to the next prompt of its
@@ -151,41 +283,14 @@ class Exchange {
       !replies.any((e) => e.kind == EntryKind.assistant);
 }
 
-/// The [count] most recent exchanges of [sessions], which must be ordered
-/// most recently active first. The oldest exchange comes first.
-Future<List<Exchange>> loadRecentExchanges(
-  List<SessionInfo> sessions,
-  int count,
-) {
-  return Isolate.run(() => _recentExchanges(sessions, count));
-}
-
-List<Exchange> _recentExchanges(List<SessionInfo> sessions, int count) {
-  final recent = <Exchange>[];
-  for (final session in sessions) {
-    // No prompt of a session is later than the session's last message, so
-    // once this session cannot displace anything, neither can a later one.
-    if (recent.length >= count &&
-        !recent[count - 1].time.isBefore(session.lastActivity)) {
-      break;
-    }
-    try {
-      recent.addAll(_exchanges(session));
-    } on FileSystemException {
-      continue; // Unreadable file: leave it out.
-    }
-    recent.sort((a, b) {
-      final byTime = b.time.compareTo(a.time);
-      return byTime != 0 ? byTime : b.index.compareTo(a.index);
-    });
-    if (recent.length > count) recent.length = count;
-  }
-  return recent.reversed.toList();
-}
-
 List<Exchange> _exchanges(SessionInfo session) {
   final exchanges = <Exchange>[];
-  final entries = _parseConversation(session.path).entries;
+  final List<Entry> entries;
+  try {
+    entries = _parseConversation(session.path).entries;
+  } on FileSystemException {
+    return exchanges; // Unreadable file: leave it out.
+  }
   for (final (index, entry) in entries.indexed) {
     if (entry.kind == EntryKind.user) {
       exchanges.add(Exchange(session, index, entry));
@@ -213,22 +318,31 @@ Map<String, dynamic>? _decode(String line) {
 // ---------------------------------------------------------------------------
 // Session list
 
-/// The paths of all transcripts under [root], dealt into at most [count]
-/// batches of about the same total size.
-List<List<String>> _sessionFileBatches(String root, int count) {
+/// The stamp of every transcript under [root], by path.
+Map<String, _Stamp> _sessionFileStamps(String root) {
+  final stamps = <String, _Stamp>{};
   final rootDir = Directory(root);
-  if (!rootDir.existsSync()) return [];
-
-  final sizes = <String, int>{};
+  if (!rootDir.existsSync()) return stamps;
   for (final dir in rootDir.listSync().whereType<Directory>()) {
     try {
       for (final file in dir.listSync().whereType<File>()) {
-        if (file.path.endsWith('.jsonl')) sizes[file.path] = file.lengthSync();
+        if (!file.path.endsWith('.jsonl')) continue;
+        final stat = file.statSync();
+        stamps[file.path] = (
+          size: stat.size,
+          modified: stat.modified.microsecondsSinceEpoch,
+        );
       }
     } on FileSystemException {
       // Unreadable directory or file: leave it out.
     }
   }
+  return stamps;
+}
+
+/// Deals the paths of [sizes] into at most [count] batches of about the same
+/// total size.
+List<List<String>> _batches(Map<String, int> sizes, int count) {
   // Largest first, each to the batch that is smallest so far.
   final paths = sizes.keys.toList()
     ..sort((a, b) => sizes[b]!.compareTo(sizes[a]!));

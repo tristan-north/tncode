@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -79,9 +81,19 @@ class _HomePageState extends State<HomePage> {
   List<Object> _rows = const [];
   int _entryCount = 0;
 
-  /// Which collapsible entries are open. Kept here so that it survives the
-  /// list recycling rows as they scroll out of view.
-  final _expanded = <Entry>{};
+  /// Which collapsible entries are open, each named by its session's path and
+  /// its position in the session: a reload makes new entries for a session
+  /// that has changed, and those names carry over to them.
+  final _expanded = <(String, int)>{};
+  var _names = Map<Entry, (String, int)>.identity();
+
+  final _store = SessionStore();
+  late final _watcher = SessionWatcher(_scheduleLoad);
+  Timer? _loadTimer;
+  bool _loading = false;
+
+  /// Whether a transcript changed while a load was under way.
+  bool _stale = false;
 
   final _scroll = ScrollController();
   final _searchField = TextEditingController();
@@ -91,26 +103,41 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _load();
+    _watcher; // Starts watching.
   }
 
   @override
   void dispose() {
+    _watcher.dispose();
+    _loadTimer?.cancel();
     _scroll.dispose();
     _searchField.dispose();
     _searchFocus.dispose();
     super.dispose();
   }
 
-  Future<void> _load() async {
-    final options = widget.options;
-    setState(() {
-      _sessions = null;
-      _exchanges = null;
-      _error = null;
-      _expanded.clear();
+  /// A transcript is written to many times a second while Claude is at
+  /// work, so a change is acted on half a second later, together with all
+  /// that follow it in that time.
+  void _scheduleLoad() {
+    _loadTimer ??= Timer(const Duration(milliseconds: 500), () {
+      _loadTimer = null;
+      _load();
     });
+  }
+
+  Future<void> _load() async {
+    if (_loading) {
+      _stale = true;
+      return;
+    }
+    _loading = true;
+    final options = widget.options;
     try {
-      var sessions = await loadSessions();
+      final changed = await _store.refresh();
+      final first = _exchanges == null;
+      if (!mounted || (!changed && !first)) return;
+      var sessions = _store.sessions;
       // A session named on the command line is shown alone.
       final wanted = options.session;
       if (wanted != null) {
@@ -119,24 +146,45 @@ class _HomePageState extends State<HomePage> {
             : sessions.where((s) => s.id.startsWith(wanted)).toList();
         if (sessions.isEmpty) options.fail('no session matches "$wanted"');
       }
-      final exchanges = await loadRecentExchanges(sessions, _exchangeCount);
+      final exchanges = await _store.recentExchanges(sessions, _exchangeCount);
       if (!mounted) return;
+
+      // Most changes are to sessions that are not on the page.
+      final before = _exchanges;
+      var same = before != null && before.length == exchanges.length;
+      for (var i = 0; same && i < exchanges.length; i++) {
+        same = identical(before![i], exchanges[i]);
+      }
+      // A view that is at its end stays there as messages arrive; one that
+      // has been scrolled back is left where it is.
+      final follow = first
+          ? !options.openAtTop
+          : _scroll.hasClients &&
+                _scroll.position.pixels >= _scroll.position.maxScrollExtent;
       setState(() {
         _sessions = sessions;
         _exchanges = exchanges;
-        _updateRows();
-        _atLatest = false;
+        _error = null;
+        if (!same) _updateRows();
       });
-      // Open on the latest messages. The list stays hidden until it has
-      // settled there, so it does not flash its first messages.
+      if (same) return;
+      // On the first load the list stays hidden until it has settled at its
+      // end, so it does not flash its first messages.
       WidgetsBinding.instance.addPostFrameCallback((_) async {
-        if (!options.openAtTop) await _scrollToBottom();
+        if (follow) await _scrollToBottom();
+        if (!first) return;
         if (mounted) setState(() => _atLatest = true);
         options.settled();
       });
     } catch (error) {
       if (mounted) setState(() => _error = error);
       options.fail('could not read sessions: $error');
+    } finally {
+      _loading = false;
+      if (_stale) {
+        _stale = false;
+        _scheduleLoad();
+      }
     }
   }
 
@@ -147,8 +195,14 @@ class _HomePageState extends State<HomePage> {
         (e.toolInput?.toLowerCase().contains(_query) ?? false) ||
         (e.toolResult?.toLowerCase().contains(_query) ?? false);
     final rows = <Object>[];
+    final names = Map<Entry, (String, int)>.identity();
     var entryCount = 0;
     for (final exchange in _exchanges ?? const <Exchange>[]) {
+      final path = exchange.session.path;
+      names[exchange.prompt] = (path, exchange.index);
+      for (final (i, reply) in exchange.replies.indexed) {
+        names[reply] = (path, exchange.index + 1 + i);
+      }
       final entries = [
         for (final e in [exchange.prompt, ...exchange.replies])
           if ((_showTools || e.kind != EntryKind.tool) &&
@@ -162,6 +216,7 @@ class _HomePageState extends State<HomePage> {
       entryCount += entries.length;
     }
     _rows = rows;
+    _names = names;
     _entryCount = entryCount;
   }
 
@@ -305,11 +360,6 @@ class _HomePageState extends State<HomePage> {
             icon: const Icon(Icons.vertical_align_bottom, size: 20),
             onPressed: _scrollToBottom,
           ),
-          IconButton(
-            tooltip: 'Reload',
-            icon: const Icon(Icons.refresh, size: 20),
-            onPressed: _load,
-          ),
         ],
       ),
     );
@@ -419,12 +469,13 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _toggle(Entry entry) => setState(() {
-    if (!_expanded.remove(entry)) _expanded.add(entry);
+    final name = _names[entry]!;
+    if (!_expanded.remove(name)) _expanded.add(name);
   });
 
   Widget _buildEntry(Entry entry) {
     final colors = Theme.of(context).colorScheme;
-    final open = _expanded.contains(entry);
+    final open = _expanded.contains(_names[entry]);
     switch (entry.kind) {
       case EntryKind.user:
         return _MessageCard(

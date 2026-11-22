@@ -12,6 +12,7 @@ Usage: tncode [options]
   --top                   Open at the oldest prompt shown, not the latest.
   --screenshot=<file.png> Write a picture of the app to the file, then exit.
   --size=<W>x<H>          The size of that picture (default 1540x880).
+  --wait=<seconds>        Take the picture this long after the app has loaded.
 ''';
 
 /// What the command line asks the app to open, and whether to write a
@@ -23,6 +24,7 @@ class LaunchOptions {
     this.openAtTop = false,
     this.screenshot,
     this.size = const Size(1540, 880),
+    this.wait = Duration.zero,
   });
 
   /// Exits with the usage text if an argument is not understood.
@@ -30,6 +32,7 @@ class LaunchOptions {
     String? session, screenshot;
     var showTools = false, openAtTop = false;
     var size = const Size(1540, 880);
+    var wait = Duration.zero;
     for (final arg in args) {
       final eq = arg.indexOf('=');
       final name = eq < 0 ? arg : arg.substring(0, eq);
@@ -46,6 +49,8 @@ class LaunchOptions {
           double.parse(dimensions.group(1)!),
           double.parse(dimensions.group(2)!),
         );
+      } else if (name == '--wait' && int.tryParse(value ?? '') != null) {
+        wait = Duration(seconds: int.parse(value!));
       } else if (arg == '--tools') {
         showTools = true;
       } else if (arg == '--top') {
@@ -61,6 +66,7 @@ class LaunchOptions {
       openAtTop: openAtTop,
       screenshot: screenshot,
       size: size,
+      wait: wait,
     );
   }
 
@@ -72,6 +78,10 @@ class LaunchOptions {
   /// Where to write the screenshot. Null for a normal launch.
   final String? screenshot;
   final Size size;
+
+  /// How long after the app has loaded the screenshot is taken, which gives
+  /// time for a change to the sessions to be picked up.
+  final Duration wait;
 
   final _boundary = GlobalKey();
   bool _settled = false;
@@ -101,7 +111,7 @@ class LaunchOptions {
   void startTimeout() {
     if (screenshot == null) return;
     Future.delayed(const Duration(seconds: 5), () {
-      fail('the app did not finish loading in 5 seconds');
+      if (!_settled) fail('the app did not finish loading in 5 seconds');
     });
   }
 
@@ -118,6 +128,7 @@ class LaunchOptions {
     final path = screenshot;
     if (path == null || _settled) return;
     _settled = true;
+    await Future.delayed(wait);
     // Attached images are decoded a few frames after they are first shown,
     // and are drawn in the frame after that.
     do {

@@ -22,6 +22,7 @@ has settled, writes the picture and exits. A run takes about 2 seconds.
 | `--tools` | Start with tool calls shown |
 | `--top` | Open at the oldest prompt shown instead of the latest |
 | `--size=<W>x<H>` | Size of the picture, default 1540x880 |
+| `--wait=<seconds>` | Take the picture this long after loading, to see a change to the sessions get picked up |
 
 Things to know:
 
