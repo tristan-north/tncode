@@ -7,9 +7,9 @@ import 'package:material_ui/material_ui.dart';
 const _usage = '''
 Usage: tncode [options]
 
-  --session=<id>|latest   Open this session (an id or the start of one).
+  --session=<id>|latest   Show only this session (an id or the start of one).
   --tools                 Start with tool calls shown.
-  --top                   Open the session at its first message, not its last.
+  --top                   Open at the oldest prompt shown, not the latest.
   --screenshot=<file.png> Write a picture of the app to the file, then exit.
   --size=<W>x<H>          The size of that picture (default 1540x880).
 ''';

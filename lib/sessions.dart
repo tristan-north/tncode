@@ -130,8 +130,70 @@ Future<List<SessionInfo>> loadSessions() async {
     ..sort((a, b) => b.lastActivity.compareTo(a.lastActivity));
 }
 
-Future<Conversation> loadConversation(String path) {
-  return Isolate.run(() => _parseConversation(path));
+/// A prompt and everything that followed it, up to the next prompt of its
+/// session.
+class Exchange {
+  Exchange(this.session, this.index, this.prompt);
+
+  final SessionInfo session;
+
+  /// The position of the prompt among the entries of its session.
+  final int index;
+  final Entry prompt;
+  final List<Entry> replies = [];
+
+  DateTime get time => prompt.time ?? session.lastActivity;
+
+  /// A slash command or shell escape that Claude said nothing to, such as
+  /// `/clear`.
+  bool get isBareCommand =>
+      (prompt.text.startsWith('/') || prompt.text.startsWith('! ')) &&
+      !replies.any((e) => e.kind == EntryKind.assistant);
+}
+
+/// The [count] most recent exchanges of [sessions], which must be ordered
+/// most recently active first. The oldest exchange comes first.
+Future<List<Exchange>> loadRecentExchanges(
+  List<SessionInfo> sessions,
+  int count,
+) {
+  return Isolate.run(() => _recentExchanges(sessions, count));
+}
+
+List<Exchange> _recentExchanges(List<SessionInfo> sessions, int count) {
+  final recent = <Exchange>[];
+  for (final session in sessions) {
+    // No prompt of a session is later than the session's last message, so
+    // once this session cannot displace anything, neither can a later one.
+    if (recent.length >= count &&
+        !recent[count - 1].time.isBefore(session.lastActivity)) {
+      break;
+    }
+    try {
+      recent.addAll(_exchanges(session));
+    } on FileSystemException {
+      continue; // Unreadable file: leave it out.
+    }
+    recent.sort((a, b) {
+      final byTime = b.time.compareTo(a.time);
+      return byTime != 0 ? byTime : b.index.compareTo(a.index);
+    });
+    if (recent.length > count) recent.length = count;
+  }
+  return recent.reversed.toList();
+}
+
+List<Exchange> _exchanges(SessionInfo session) {
+  final exchanges = <Exchange>[];
+  final entries = _parseConversation(session.path).entries;
+  for (final (index, entry) in entries.indexed) {
+    if (entry.kind == EntryKind.user) {
+      exchanges.add(Exchange(session, index, entry));
+    } else if (exchanges.isNotEmpty) {
+      exchanges.last.replies.add(entry);
+    }
+  }
+  return exchanges..removeWhere((e) => e.isBareCommand);
 }
 
 Iterable<String> _lines(String path) {

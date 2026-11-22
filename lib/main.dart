@@ -24,16 +24,32 @@ class TncodeApp extends StatelessWidget {
       title: 'Claude Sessions',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: seedColor,
-          brightness: Brightness.dark,
-        ),
+        colorScheme:
+            ColorScheme.fromSeed(
+              seedColor: seedColor,
+              brightness: Brightness.dark,
+            ).copyWith(
+              surface: surfaceColors.page,
+              surfaceContainerLow: surfaceColors.bar,
+              surfaceContainer: surfaceColors.panel,
+              surfaceBright: surfaceColors.raised,
+              surfaceContainerHigh: surfaceColors.code,
+              onSurface: surfaceColors.text,
+              primary: surfaceColors.accent,
+              onSurfaceVariant: surfaceColors.dimText,
+              outlineVariant: surfaceColors.line,
+              // Claude's colour. The one made from a blue seed is pink.
+              tertiary: const Color(0xFFD8C58D),
+            ),
       ),
       builder: (context, child) => options.wrap(context, child!),
       home: HomePage(options: options),
     );
   }
 }
+
+/// How many prompts, with their replies, the page shows.
+const _exchangeCount = 10;
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key, required this.options});
@@ -46,17 +62,30 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   List<SessionInfo>? _sessions;
+  List<Exchange>? _exchanges;
   Object? _error;
-  SessionInfo? _selected;
-  String _filter = '';
 
-  /// Whether the command line's session has been dealt with.
-  bool _launched = false;
+  late bool _showTools = widget.options.showTools;
 
-  /// Set by dragging the edge of the sidebar. Not kept between launches.
-  double _sidebarWidth = 380;
-  static const _minSidebarWidth = 220.0;
-  static const _minConversationWidth = 480.0;
+  /// False from when the exchanges load until the view has scrolled to its
+  /// end.
+  bool _atLatest = false;
+  bool _searching = false;
+  String _query = '';
+
+  /// What the list shows, recomputed only when the Tools toggle or the search
+  /// changes: each [Exchange] that has entries passing those, as its heading,
+  /// followed by those entries.
+  List<Object> _rows = const [];
+  int _entryCount = 0;
+
+  /// Which collapsible entries are open. Kept here so that it survives the
+  /// list recycling rows as they scroll out of view.
+  final _expanded = <Entry>{};
+
+  final _scroll = ScrollController();
+  final _searchField = TextEditingController();
+  final _searchFocus = FocusNode();
 
   @override
   void initState() {
@@ -64,139 +93,148 @@ class _HomePageState extends State<HomePage> {
     _load();
   }
 
+  @override
+  void dispose() {
+    _scroll.dispose();
+    _searchField.dispose();
+    _searchFocus.dispose();
+    super.dispose();
+  }
+
   Future<void> _load() async {
+    final options = widget.options;
     setState(() {
       _sessions = null;
+      _exchanges = null;
       _error = null;
+      _expanded.clear();
     });
     try {
-      final sessions = await loadSessions();
+      var sessions = await loadSessions();
+      // A session named on the command line is shown alone.
+      final wanted = options.session;
+      if (wanted != null) {
+        sessions = wanted == 'latest'
+            ? sessions.take(1).toList()
+            : sessions.where((s) => s.id.startsWith(wanted)).toList();
+        if (sessions.isEmpty) options.fail('no session matches "$wanted"');
+      }
+      final exchanges = await loadRecentExchanges(sessions, _exchangeCount);
       if (!mounted) return;
-      setState(() => _sessions = sessions);
-      if (!_launched) _openLaunchSession(sessions);
+      setState(() {
+        _sessions = sessions;
+        _exchanges = exchanges;
+        _updateRows();
+        _atLatest = false;
+      });
+      // Open on the latest messages. The list stays hidden until it has
+      // settled there, so it does not flash its first messages.
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (!options.openAtTop) await _scrollToBottom();
+        if (mounted) setState(() => _atLatest = true);
+        options.settled();
+      });
     } catch (error) {
       if (mounted) setState(() => _error = error);
-      widget.options.fail('could not read sessions: $error');
+      options.fail('could not read sessions: $error');
     }
   }
 
-  /// Opens the session named on the command line, once, when the sessions
-  /// first load.
-  void _openLaunchSession(List<SessionInfo> sessions) {
-    _launched = true;
-    final options = widget.options;
-    final wanted = options.session;
-    if (wanted == null) {
-      options.settled();
-      return;
+  void _updateRows() {
+    bool matches(Entry e) =>
+        e.text.toLowerCase().contains(_query) ||
+        (e.toolName?.toLowerCase().contains(_query) ?? false) ||
+        (e.toolInput?.toLowerCase().contains(_query) ?? false) ||
+        (e.toolResult?.toLowerCase().contains(_query) ?? false);
+    final rows = <Object>[];
+    var entryCount = 0;
+    for (final exchange in _exchanges ?? const <Exchange>[]) {
+      final entries = [
+        for (final e in [exchange.prompt, ...exchange.replies])
+          if ((_showTools || e.kind != EntryKind.tool) &&
+              (_query.isEmpty || matches(e)))
+            e,
+      ];
+      if (entries.isEmpty) continue;
+      rows
+        ..add(exchange)
+        ..addAll(entries);
+      entryCount += entries.length;
     }
-    final matching = wanted == 'latest'
-        ? sessions.take(1)
-        : sessions.where((s) => s.id.startsWith(wanted));
-    if (matching.isEmpty) {
-      options.fail('no session matches "$wanted"');
-      return;
+    _rows = rows;
+    _entryCount = entryCount;
+  }
+
+  void _openSearch() {
+    setState(() => _searching = true);
+    _searchFocus.requestFocus();
+  }
+
+  void _closeSearch() {
+    _searchField.clear();
+    setState(() {
+      _searching = false;
+      _query = '';
+      _updateRows();
+    });
+  }
+
+  void _scrollToTop() {
+    if (_scroll.hasClients) _scroll.jumpTo(0);
+  }
+
+  /// The list only knows the height of rows it has built, so the far end is
+  /// an estimate, which can fall short of or overshoot the real end and is
+  /// corrected once the rows there are built: jump until it settles.
+  Future<void> _scrollToBottom() async {
+    for (var i = 0; i < 20; i++) {
+      if (!mounted || !_scroll.hasClients) return;
+      final position = _scroll.position;
+      if (i > 0 && position.pixels == position.maxScrollExtent) return;
+      _scroll.jumpTo(position.maxScrollExtent);
+      await WidgetsBinding.instance.endOfFrame;
     }
-    setState(() => _selected = matching.first);
   }
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return Scaffold(
-      body: LayoutBuilder(
-        builder: (context, constraints) => _buildPanes(constraints.maxWidth),
+      body: CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.keyF, control: true):
+              _openSearch,
+          if (_searching)
+            const SingleActivator(LogicalKeyboardKey.escape): _closeSearch,
+        },
+        child: Focus(
+          autofocus: true,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Material(
+                color: colors.surfaceContainerLow,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [_buildHeader(), if (_searching) _buildSearchBar()],
+                ),
+              ),
+              Divider(height: 1, color: colors.outlineVariant),
+              Expanded(child: _buildBody()),
+            ],
+          ),
+        ),
       ),
     );
   }
 
-  Widget _buildPanes(double windowWidth) {
-    final colors = Theme.of(context).colorScheme;
-    // Clamped on every build, so a sidebar dragged wide gives way when the
-    // window is made narrow.
-    final maxWidth = (windowWidth - _minConversationWidth).clamp(
-      _minSidebarWidth,
-      double.infinity,
-    );
-    final sidebarWidth = _sidebarWidth.clamp(_minSidebarWidth, maxWidth);
-    final panes = Row(
-      children: [
-        SizedBox(
-          width: sidebarWidth,
-          child: Material(
-            color: colors.surfaceContainerLow,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _buildSidebarHeader(),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(10, 0, 14, 10),
-                  child: TextField(
-                    style: const TextStyle(fontSize: 13),
-                    decoration: InputDecoration(
-                      hintText: 'Filter projects or sessions...',
-                      prefixIcon: const Icon(Icons.search, size: 18),
-                      isDense: true,
-                      filled: true,
-                      fillColor: colors.surface,
-                      enabledBorder: OutlineInputBorder(
-                        borderSide: BorderSide(color: colors.outlineVariant),
-                      ),
-                      border: const OutlineInputBorder(),
-                    ),
-                    onChanged: (v) => setState(() => _filter = v.toLowerCase()),
-                  ),
-                ),
-                Divider(height: 1, color: colors.outlineVariant),
-                Expanded(child: _buildSessionList()),
-              ],
-            ),
-          ),
-        ),
-        VerticalDivider(width: 1, color: colors.outlineVariant),
-        Expanded(
-          child: _selected == null
-              ? const _Message('Select a session')
-              : ConversationView(
-                  key: ValueKey(_selected!.path),
-                  session: _selected!,
-                  options: widget.options,
-                ),
-        ),
-      ],
-    );
-    // The drag handle lies over the divider, wider than the line so that it
-    // is easy to grab, without taking any width from either pane.
-    return Stack(
-      children: [
-        panes,
-        Positioned(
-          left: sidebarWidth - 3,
-          top: 0,
-          bottom: 0,
-          width: 7,
-          child: MouseRegion(
-            cursor: SystemMouseCursors.resizeColumn,
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onHorizontalDragUpdate: (details) => setState(() {
-                _sidebarWidth = (sidebarWidth + details.delta.dx).clamp(
-                  _minSidebarWidth,
-                  maxWidth,
-                );
-              }),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildSidebarHeader() {
+  Widget _buildHeader() {
     final colors = Theme.of(context).colorScheme;
     final sessions = _sessions;
+    final exchanges = _exchanges;
     final projectCount = sessions?.map((s) => s.projectDir).toSet().length;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 10, 6, 8),
+      padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
       child: Row(
         children: [
           Container(
@@ -222,9 +260,13 @@ class _HomePageState extends State<HomePage> {
                   style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
                 ),
                 Text(
-                  sessions == null
+                  sessions == null || exchanges == null
                       ? 'Loading…'
-                      : '$projectCount projects · ${sessions.length} sessions',
+                      : 'Latest ${exchanges.length} prompts · '
+                            '$projectCount projects · '
+                            '${sessions.length} sessions',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 11,
                     color: colors.onSurfaceVariant,
@@ -233,373 +275,40 @@ class _HomePageState extends State<HomePage> {
               ],
             ),
           ),
-          IconButton(
-            tooltip: 'Reload sessions',
-            icon: const Icon(Icons.refresh, size: 18),
-            onPressed: _load,
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSessionList() {
-    if (_error != null) return _Message('Could not read sessions:\n$_error');
-    final sessions = _sessions;
-    if (sessions == null) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    if (sessions.isEmpty) {
-      final root = claudeProjectsDir();
-      return _Message(
-        root == null
-            ? 'Cannot find Claude Code sessions: HOME is not set'
-            : 'No sessions found in\n$root',
-      );
-    }
-    final matching = _filter.isEmpty
-        ? sessions
-        : [
-            for (final s in sessions)
-              if (s.title.toLowerCase().contains(_filter) ||
-                  s.projectDir.toLowerCase().contains(_filter))
-                s,
-          ];
-    if (matching.isEmpty) return const _Message('No matching sessions');
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      itemCount: matching.length,
-      itemBuilder: (context, i) => _buildSession(matching[i]),
-    );
-  }
-
-  Widget _buildSession(SessionInfo session) {
-    final colors = Theme.of(context).colorScheme;
-    final selected = session.path == _selected?.path;
-    final project = session.projectDir
-        .split('/')
-        .lastWhere((part) => part.isNotEmpty, orElse: () => session.projectDir);
-    return Ink(
-      color: selected ? colors.secondaryContainer : null,
-      child: InkWell(
-        onTap: () => setState(() => _selected = session),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                session.title,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: selected ? colors.onSecondaryContainer : null,
-                ),
-              ),
-              const SizedBox(height: 5),
-              Row(
-                children: [
-                  Flexible(
-                    child: Tooltip(
-                      message: shortenHome(session.projectDir),
-                      child: _Chip(
-                        project,
-                        icon: Icons.folder_outlined,
-                        color: _projectColor(session.projectDir),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    _relativeTime(session.lastActivity),
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: colors.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _Message extends StatelessWidget {
-  const _Message(this.text);
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Text(
-          text,
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class ConversationView extends StatefulWidget {
-  const ConversationView({
-    super.key,
-    required this.session,
-    required this.options,
-  });
-
-  final SessionInfo session;
-  final LaunchOptions options;
-
-  @override
-  State<ConversationView> createState() => _ConversationViewState();
-}
-
-class _ConversationViewState extends State<ConversationView> {
-  Conversation? _conversation;
-  Object? _error;
-
-  late bool _showTools = widget.options.showTools;
-
-  /// False from when a conversation loads until the view has scrolled to
-  /// its end.
-  bool _atLatest = false;
-  bool _searching = false;
-  String _query = '';
-
-  /// The entries that pass the Tools toggle and the search, recomputed only
-  /// when one of those changes.
-  List<Entry> _visible = const [];
-
-  /// Which collapsible entries are open. Kept here so that it survives the
-  /// list recycling rows as they scroll out of view.
-  final _expanded = <Entry>{};
-
-  final _scroll = ScrollController();
-  final _searchField = TextEditingController();
-  final _searchFocus = FocusNode();
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  @override
-  void dispose() {
-    _scroll.dispose();
-    _searchField.dispose();
-    _searchFocus.dispose();
-    super.dispose();
-  }
-
-  Future<void> _load() async {
-    setState(() {
-      _conversation = null;
-      _error = null;
-      _expanded.clear();
-    });
-    try {
-      final conversation = await loadConversation(widget.session.path);
-      if (!mounted) return;
-      setState(() {
-        _conversation = conversation;
-        _updateVisible();
-        _atLatest = false;
-      });
-      // Open on the latest messages. The list stays hidden until it has
-      // settled there, so it does not flash its first messages.
-      WidgetsBinding.instance.addPostFrameCallback((_) async {
-        if (!widget.options.openAtTop) await _scrollToBottom();
-        if (mounted) setState(() => _atLatest = true);
-        widget.options.settled();
-      });
-    } catch (error) {
-      if (mounted) setState(() => _error = error);
-      widget.options.fail('could not read session: $error');
-    }
-  }
-
-  void _updateVisible() {
-    final entries = _conversation?.entries ?? const <Entry>[];
-    bool matches(Entry e) =>
-        e.text.toLowerCase().contains(_query) ||
-        (e.toolName?.toLowerCase().contains(_query) ?? false) ||
-        (e.toolInput?.toLowerCase().contains(_query) ?? false) ||
-        (e.toolResult?.toLowerCase().contains(_query) ?? false);
-    _visible = [
-      for (final e in entries)
-        if ((_showTools || e.kind != EntryKind.tool) &&
-            (_query.isEmpty || matches(e)))
-          e,
-    ];
-  }
-
-  void _openSearch() {
-    setState(() => _searching = true);
-    _searchFocus.requestFocus();
-  }
-
-  void _closeSearch() {
-    _searchField.clear();
-    setState(() {
-      _searching = false;
-      _query = '';
-      _updateVisible();
-    });
-  }
-
-  void _scrollToTop() {
-    if (_scroll.hasClients) _scroll.jumpTo(0);
-  }
-
-  /// The list only knows the height of rows it has built, so the far end is
-  /// an estimate, which can fall short of or overshoot the real end and is
-  /// corrected once the rows there are built: jump until it settles.
-  Future<void> _scrollToBottom() async {
-    for (var i = 0; i < 20; i++) {
-      if (!mounted || !_scroll.hasClients) return;
-      final position = _scroll.position;
-      if (i > 0 && position.pixels == position.maxScrollExtent) return;
-      _scroll.jumpTo(position.maxScrollExtent);
-      await WidgetsBinding.instance.endOfFrame;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return CallbackShortcuts(
-      bindings: {
-        const SingleActivator(LogicalKeyboardKey.keyF, control: true):
-            _openSearch,
-        if (_searching)
-          const SingleActivator(LogicalKeyboardKey.escape): _closeSearch,
-      },
-      child: Focus(
-        autofocus: true,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _buildHeader(),
-            if (_searching) _buildSearchBar(),
-            Divider(height: 1, color: colors.outlineVariant),
-            Expanded(child: _buildBody()),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildHeader() {
-    final session = widget.session;
-    final conversation = _conversation;
-    final id = session.id.length > 8
-        ? '${session.id.substring(0, 8)}…'
-        : session.id;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(22, 10, 10, 10),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  session.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: [
-                    _Chip(
-                      shortenHome(session.projectDir),
-                      icon: Icons.folder_outlined,
-                      color: _projectColor(session.projectDir),
-                    ),
-                    if (conversation?.gitBranch != null)
-                      _Chip(conversation!.gitBranch!, icon: Icons.fork_right),
-                    if (conversation?.model != null)
-                      _Chip(conversation!.model!, icon: Icons.memory),
-                    Tooltip(
-                      message: session.id,
-                      child: _Chip(id, icon: Icons.tag),
-                    ),
-                    _Chip(
-                      _dateTime(
-                        conversation?.lastActivity ?? session.lastActivity,
-                      ),
-                      icon: Icons.schedule,
-                    ),
-                    if (conversation != null && conversation.totalTokens > 0)
-                      _Chip(
-                        '${_tokens(conversation.totalTokens)} tokens',
-                        icon: Icons.data_usage,
-                      ),
-                  ],
-                ),
-              ],
-            ),
-          ),
           const SizedBox(width: 12),
-          // In a row of their own so that the labelled button and the icon
-          // buttons, which differ in height, share a centre line.
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _ToggleButton(
-                label: 'Show tool calls',
-                icon: Icons.build_outlined,
-                tooltip: _showTools
-                    ? 'Tool calls are shown. Click to hide them.'
-                    : 'Tool calls are hidden. Click to show them.',
-                active: _showTools,
-                onPressed: () => setState(() {
-                  _showTools = !_showTools;
-                  _updateVisible();
-                }),
-              ),
-              const SizedBox(width: 4),
-              IconButton(
-                tooltip: 'Search this conversation (Ctrl+F)',
-                icon: const Icon(Icons.search, size: 20),
-                isSelected: _searching,
-                onPressed: _searching ? _closeSearch : _openSearch,
-              ),
-              IconButton(
-                tooltip: 'Scroll to top',
-                icon: const Icon(Icons.vertical_align_top, size: 20),
-                onPressed: _scrollToTop,
-              ),
-              IconButton(
-                tooltip: 'Scroll to bottom',
-                icon: const Icon(Icons.vertical_align_bottom, size: 20),
-                onPressed: _scrollToBottom,
-              ),
-              IconButton(
-                tooltip: 'Reload conversation',
-                icon: const Icon(Icons.refresh, size: 20),
-                onPressed: _load,
-              ),
-            ],
+          _ToggleButton(
+            label: 'Show tool calls',
+            icon: Icons.build_outlined,
+            tooltip: _showTools
+                ? 'Tool calls are shown. Click to hide them.'
+                : 'Tool calls are hidden. Click to show them.',
+            active: _showTools,
+            onPressed: () => setState(() {
+              _showTools = !_showTools;
+              _updateRows();
+            }),
+          ),
+          const SizedBox(width: 4),
+          IconButton(
+            tooltip: 'Search these messages (Ctrl+F)',
+            icon: const Icon(Icons.search, size: 20),
+            isSelected: _searching,
+            onPressed: _searching ? _closeSearch : _openSearch,
+          ),
+          IconButton(
+            tooltip: 'Scroll to top',
+            icon: const Icon(Icons.vertical_align_top, size: 20),
+            onPressed: _scrollToTop,
+          ),
+          IconButton(
+            tooltip: 'Scroll to bottom',
+            icon: const Icon(Icons.vertical_align_bottom, size: 20),
+            onPressed: _scrollToBottom,
+          ),
+          IconButton(
+            tooltip: 'Reload',
+            icon: const Icon(Icons.refresh, size: 20),
+            onPressed: _load,
           ),
         ],
       ),
@@ -609,7 +318,7 @@ class _ConversationViewState extends State<ConversationView> {
   Widget _buildSearchBar() {
     final colors = Theme.of(context).colorScheme;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(22, 0, 10, 10),
+      padding: const EdgeInsets.fromLTRB(14, 0, 10, 10),
       child: Row(
         children: [
           Expanded(
@@ -625,14 +334,14 @@ class _ConversationViewState extends State<ConversationView> {
               ),
               onChanged: (value) => setState(() {
                 _query = value.trim().toLowerCase();
-                _updateVisible();
+                _updateRows();
               }),
             ),
           ),
           const SizedBox(width: 12),
           if (_query.isNotEmpty)
             Text(
-              '${_visible.length} matching',
+              '$_entryCount matching',
               style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
             ),
           IconButton(
@@ -646,37 +355,64 @@ class _ConversationViewState extends State<ConversationView> {
   }
 
   Widget _buildBody() {
-    if (_error != null) return _Message('Could not read session:\n$_error');
-    final conversation = _conversation;
-    if (conversation == null) {
+    if (_error != null) return _Message('Could not read sessions:\n$_error');
+    final exchanges = _exchanges;
+    if (exchanges == null) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (conversation.entries.isEmpty) {
-      return const _Message('This session has no messages');
-    }
-    if (_visible.isEmpty) {
+    if (exchanges.isEmpty) {
+      final root = claudeProjectsDir();
       return _Message(
-        _query.isEmpty
-            ? 'Only tool calls here. Turn on “Show tool calls” to see them.'
-            : 'No messages contain “$_query”',
+        root == null
+            ? 'Cannot find Claude Code sessions: HOME is not set'
+            : 'No prompts found in\n$root',
       );
     }
+    if (_rows.isEmpty) return _Message('No messages contain “$_query”');
     return Opacity(
       opacity: _atLatest ? 1 : 0,
       child: SelectionArea(
         child: ListView.builder(
           controller: _scroll,
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-          itemCount: _visible.length,
-          itemBuilder: (context, i) => Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 960),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: _buildEntry(_visible[i]),
+          itemCount: _rows.length,
+          itemBuilder: (context, i) {
+            final row = _rows[i];
+            final heading = row is Exchange;
+            final last = i + 1 == _rows.length || _rows[i + 1] is Exchange;
+            // An exchange is drawn as one panel, which is made of its rows:
+            // the heading rounds the top corners and the last entry the
+            // bottom ones.
+            const radius = Radius.circular(10);
+            final panel = Container(
+              width: double.infinity,
+              padding: EdgeInsets.fromLTRB(
+                14,
+                heading ? 12 : 0,
+                14,
+                last ? 10 : 0,
               ),
-            ),
-          ),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainer,
+                borderRadius: BorderRadius.vertical(
+                  top: heading ? radius : Radius.zero,
+                  bottom: last ? radius : Radius.zero,
+                ),
+              ),
+              child: heading
+                  ? _ExchangeHeading(row)
+                  : _buildEntry(row as Entry),
+            );
+            return Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 960),
+                child: Padding(
+                  padding: EdgeInsets.only(top: heading && i > 0 ? 22 : 0),
+                  child: panel,
+                ),
+              ),
+            );
+          },
         ),
       ),
     );
@@ -693,10 +429,7 @@ class _ConversationViewState extends State<ConversationView> {
       case EntryKind.user:
         return _MessageCard(
           accent: colors.primary,
-          background: Color.alphaBlend(
-            colors.primary.withValues(alpha: 0.07),
-            colors.surface,
-          ),
+          background: colors.surfaceBright,
           icon: Icons.person_outline,
           author: 'You',
           time: entry.time,
@@ -766,6 +499,82 @@ class _ConversationViewState extends State<ConversationView> {
           ),
         );
     }
+  }
+}
+
+/// The line above a prompt and its reply: the project they belong to, the
+/// title of their session and when the prompt was sent.
+class _ExchangeHeading extends StatelessWidget {
+  const _ExchangeHeading(this.exchange);
+
+  final Exchange exchange;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final session = exchange.session;
+    final project = session.projectDir
+        .split('/')
+        .lastWhere((part) => part.isNotEmpty, orElse: () => session.projectDir);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: Row(
+            children: [
+              Tooltip(
+                message: shortenHome(session.projectDir),
+                child: _Chip(
+                  project,
+                  icon: Icons.folder_outlined,
+                  color: _projectColor(session.projectDir),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  session.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                _relativeTime(exchange.time),
+                style: TextStyle(fontSize: 11, color: colors.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _Message extends StatelessWidget {
+  const _Message(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Text(
+          text,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -1152,18 +961,6 @@ String _two(int n) => n.toString().padLeft(2, '0');
 String _date(DateTime t) => '${t.year}-${_two(t.month)}-${_two(t.day)}';
 
 String _hourMinute(DateTime t) => '${_two(t.hour)}:${_two(t.minute)}';
-
-String _clock(DateTime t) => '${_hourMinute(t)}:${_two(t.second)}';
-
-String _dateTime(DateTime t) => '${_date(t)} ${_clock(t)}';
-
-/// A token count the way the header shows it: 140, 58.7k,
-/// 1.2M.
-String _tokens(int n) {
-  if (n < 1000) return '$n';
-  if (n < 1000000) return '${(n / 1000).toStringAsFixed(1)}k';
-  return '${(n / 1000000).toStringAsFixed(1)}M';
-}
 
 String _relativeTime(DateTime t) {
   final diff = DateTime.now().difference(t);

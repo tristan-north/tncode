@@ -18,15 +18,15 @@ has settled, writes the picture and exits. A run takes about 2 seconds.
 | Flag | Effect |
 |---|---|
 | `--screenshot=<file.png>` | Write a picture of the app to the file, then exit |
-| `--session=<id>` or `latest` | Open that session; the start of an id is enough |
+| `--session=<id>` or `latest` | Show only that session's prompts; the start of an id is enough |
 | `--tools` | Start with tool calls shown |
-| `--top` | Open sessions at their first message instead of their last |
+| `--top` | Open at the oldest prompt shown instead of the latest |
 | `--size=<W>x<H>` | Size of the picture, default 1540x880 |
 
 Things to know:
 
 - The picture is laid out at `--size` whatever size the window is, so a tall
-  size such as `--size=1000x3000` shows more of a conversation in one picture.
+  size such as `--size=1000x3000` shows more prompts in one picture.
 - Exit status 1 means the app could not show what was asked for: no session
   matched, a file could not be read, or loading took more than 5 seconds.
   Status 64 means an argument was not understood. The reason is on stderr.
