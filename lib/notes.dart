@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/rendering.dart' show RenderParagraph;
 import 'package:flutter/scheduler.dart' show timeDilation;
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
@@ -421,33 +422,41 @@ class _NotesSidebarState extends State<NotesSidebar> {
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
       child: Row(
         children: [
-          Icon(Icons.checklist, size: 17, color: colors.primary),
-          const SizedBox(width: 8),
-          const Text(
-            'Notes',
-            style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+          // The icon and the count take the same width, so that the name
+          // between them is in the middle of the sidebar.
+          SizedBox(
+            width: _headerSide,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Icon(Icons.checklist, size: 17, color: colors.primary),
+            ),
           ),
-          const SizedBox(width: 8),
           Expanded(
             child: Text(
               widget.projectName,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
               style: monoStyle.copyWith(
                 fontSize: 12,
                 color: widget.projectColor,
               ),
             ),
           ),
-          const SizedBox(width: 8),
-          Text(
-            '$count to do',
-            style: TextStyle(fontSize: 11, color: colors.onSurfaceVariant),
+          SizedBox(
+            width: _headerSide,
+            child: Text(
+              '$count to do',
+              textAlign: TextAlign.right,
+              style: TextStyle(fontSize: 11, color: colors.onSurfaceVariant),
+            ),
           ),
         ],
       ),
     );
   }
+
+  static const _headerSide = 64.0;
 
   Widget _buildAddField() {
     return Padding(
@@ -465,7 +474,6 @@ class _NotesSidebarState extends State<NotesSidebar> {
           textInputAction: TextInputAction.done,
           decoration: const InputDecoration(
             hintText: 'Add a note…',
-            prefixIcon: Icon(Icons.add, size: 18),
             isDense: true,
             border: OutlineInputBorder(),
           ),
@@ -504,11 +512,7 @@ class _NotesSidebarState extends State<NotesSidebar> {
       // The dragged note takes no part in what the pointer is over, so that
       // the pointer is the closed hand there too.
       proxyDecorator: (child, _, _) => IgnorePointer(
-        child: Material(
-          color: Theme.of(context).colorScheme.surfaceBright,
-          elevation: 4,
-          child: child,
-        ),
+        child: Material(type: MaterialType.transparency, child: child),
       ),
       itemBuilder: (context, i) => _buildRow(todo[i], index: i),
     );
@@ -620,6 +624,27 @@ class _NoteRowState extends State<_NoteRow>
     with SingleTickerProviderStateMixin {
   bool _hovered = false;
 
+  static final _radius = BorderRadius.circular(6);
+
+  final _text = GlobalKey();
+
+  /// Where in the text the click that began the editing was, which is where
+  /// the cursor is put. The text is laid out the same in the box that it is
+  /// changed in.
+  int? _cursor;
+
+  void _edit(TapUpDetails details) {
+    final paragraph = _text.currentContext?.findRenderObject();
+    _cursor = paragraph is RenderParagraph
+        ? paragraph
+              .getPositionForOffset(
+                paragraph.globalToLocal(details.globalPosition),
+              )
+              .offset
+        : null;
+    widget.onEdit();
+  }
+
   /// Runs from 0 to 1 as the outline of a note that has been saved fades.
   late final _flash = AnimationController(
     vsync: this,
@@ -668,12 +693,15 @@ class _NoteRowState extends State<_NoteRow>
     final row = MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
-      child: ColoredBox(
-        color: _hovered && !widget.editing
-            ? colors.surfaceBright
-            : const Color(0x00000000),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: _hovered && !widget.editing
+              ? colors.surfaceContainerHigh
+              : colors.surfaceBright,
+          borderRadius: _radius,
+        ),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 5, 6, 5),
+          padding: const EdgeInsets.fromLTRB(10, 7, 6, 7),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -694,12 +722,13 @@ class _NoteRowState extends State<_NoteRow>
                 child: widget.editing
                     ? _NoteEditor(
                         text: note.text,
+                        cursor: _cursor,
                         style: textStyle,
                         onDone: widget.onEdited,
                       )
                     : GestureDetector(
                         behavior: HitTestBehavior.opaque,
-                        onTap: done ? null : widget.onEdit,
+                        onTapUp: done ? null : _edit,
                         child: MouseRegion(
                           cursor: done
                               ? MouseCursor.defer
@@ -713,6 +742,7 @@ class _NoteRowState extends State<_NoteRow>
                             ),
                             child: Text(
                               note.text,
+                              key: _text,
                               style: done
                                   ? textStyle.copyWith(
                                       color: colors.onSurfaceVariant,
@@ -762,18 +792,24 @@ class _NoteRowState extends State<_NoteRow>
               alpha: 0.7 * (1 - Curves.easeIn.transform(_flash.value)),
             ),
           ),
-          borderRadius: BorderRadius.circular(4),
+          borderRadius: _radius,
         ),
         child: child,
       ),
     );
-    if (index == null) return outlined;
+    // Each note is a box of its own, as wide as the box that one is added
+    // in, with a gap to the next.
+    final box = Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
+      child: outlined,
+    );
+    if (index == null) return box;
     // A note to do is dragged to another place by any part of it. While its
     // text is being changed, a drag selects text instead.
     return ReorderableDragStartListener(
       index: index,
       enabled: !widget.editing,
-      child: outlined,
+      child: box,
     );
   }
 }
@@ -783,6 +819,7 @@ class _NoteRowState extends State<_NoteRow>
 class _NoteEditor extends StatefulWidget {
   const _NoteEditor({
     required this.text,
+    required this.cursor,
     required this.style,
     required this.onDone,
   });
@@ -794,6 +831,9 @@ class _NoteEditor extends StatefulWidget {
   static const cursorRoom = _cursorWidth + 1;
 
   final String text;
+
+  /// Where in the text the cursor starts. Null for its end.
+  final int? cursor;
   final TextStyle style;
   final ValueChanged<String?> onDone;
 
@@ -802,7 +842,17 @@ class _NoteEditor extends StatefulWidget {
 }
 
 class _NoteEditorState extends State<_NoteEditor> {
-  late final _field = TextEditingController(text: widget.text);
+  late final _field = TextEditingController.fromValue(
+    TextEditingValue(
+      text: widget.text,
+      selection: TextSelection.collapsed(
+        offset: (widget.cursor ?? widget.text.length).clamp(
+          0,
+          widget.text.length,
+        ),
+      ),
+    ),
+  );
   final _focus = FocusNode();
   bool _ended = false;
 
@@ -841,7 +891,8 @@ class _NoteEditorState extends State<_NoteEditor> {
         style: widget.style,
         cursorWidth: _NoteEditor._cursorWidth,
         minLines: 1,
-        maxLines: 12,
+        // As tall as its text, as the note is when it is not being changed.
+        maxLines: null,
         textInputAction: TextInputAction.done,
         // No border and no padding, so that the text stays where it was.
         decoration: const InputDecoration.collapsed(hintText: null),
