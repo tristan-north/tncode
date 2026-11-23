@@ -16,7 +16,6 @@ Usage: tncode [options]
   --screenshot=<file.png> Write a picture of the app to the file, then exit.
   --size=<W>x<H>          The size of that picture (default 1540x880).
   --wait=<seconds>        Take the picture this long after the app has loaded.
-  --scale=<number>        Draw this many times as large, not as the desktop asks.
 ''';
 
 /// What the command line asks the app to open, and whether to write a
@@ -31,7 +30,6 @@ class LaunchOptions {
     this.screenshot,
     this.size = const Size(1540, 880),
     this.wait = Duration.zero,
-    this.scale,
   });
 
   /// Exits with the usage text if an argument is not understood.
@@ -40,7 +38,6 @@ class LaunchOptions {
     var showTools = false, openAtTop = false;
     var size = const Size(1540, 880);
     var wait = Duration.zero;
-    double? scale;
     for (final arg in args) {
       final eq = arg.indexOf('=');
       final name = eq < 0 ? arg : arg.substring(0, eq);
@@ -63,10 +60,6 @@ class LaunchOptions {
         );
       } else if (name == '--wait' && int.tryParse(value ?? '') != null) {
         wait = Duration(seconds: int.parse(value!));
-      } else if (name == '--scale' &&
-          (double.tryParse(value ?? '') ?? 0) >= 1 &&
-          double.parse(value!) <= 4) {
-        scale = double.parse(value);
       } else if (arg == '--tools') {
         showTools = true;
       } else if (arg == '--top') {
@@ -85,7 +78,6 @@ class LaunchOptions {
       screenshot: screenshot,
       size: size,
       wait: wait,
-      scale: scale,
     );
   }
 
@@ -108,10 +100,6 @@ class LaunchOptions {
   /// How long after the app has loaded the screenshot is taken, which gives
   /// time for a change to the sessions to be picked up.
   final Duration wait;
-
-  /// How many times as large to draw the app, from 1 to 4. Null for what
-  /// the desktop asks for.
-  final double? scale;
 
   final _boundary = GlobalKey();
   bool _settled = false;
