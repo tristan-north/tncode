@@ -7,11 +7,18 @@ import 'annotations.dart';
 import 'launch.dart';
 import 'markdown.dart';
 import 'notes.dart';
+import 'scale.dart';
 import 'sessions.dart';
 
-void main(List<String> args) {
+Future<void> main(List<String> args) async {
   final options = LaunchOptions.parse(args);
   options.startTimeout();
+  WidgetsFlutterBinding.ensureInitialized();
+  if (options.scale case final scale?) {
+    uiScale.value = scale;
+  } else {
+    await followDesktopScale();
+  }
   runApp(TncodeApp(options: options));
 }
 
@@ -46,7 +53,9 @@ class TncodeApp extends StatelessWidget {
               tertiary: const Color(0xFFD8C58D),
             ),
       ),
-      builder: (context, child) => options.wrap(context, child!),
+      builder: (context, child) => UiScale(
+        child: Builder(builder: (context) => options.wrap(context, child!)),
+      ),
       home: HomePage(options: options),
     );
   }

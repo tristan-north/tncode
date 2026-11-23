@@ -25,6 +25,7 @@ has settled, writes the picture and exits. A run takes about 2 seconds.
 | `--top` | Open at the oldest prompt shown instead of the latest |
 | `--size=<W>x<H>` | Size of the picture, default 1540x880 |
 | `--wait=<seconds>` | Take the picture this long after loading, to see a change to the sessions get picked up |
+| `--scale=<number>` | Draw the app this many times as large, from 1 to 4, instead of following the desktop's scale. A `--screenshot` picture is not scaled; see it with `shot` in `tool/drive` |
 
 Things to know:
 

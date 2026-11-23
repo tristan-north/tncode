@@ -7,9 +7,45 @@
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
+  FlMethodChannel* scale_channel;
 };
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
+
+// How much larger than Flutter draws it the app has to be drawn. Flutter
+// follows the whole-number scale of the window, which is all there is on
+// Wayland. On X11 a desktop with a scale such as 1.75 gives the window the
+// pixels of the screen and puts the scale in the font resolution (Xft/DPI),
+// which Flutter does not look at, so the Dart side scales by this instead
+// (see lib/scale.dart).
+static double ui_scale() {
+  GdkDisplay* display = gdk_display_get_default();
+  if (!g_str_equal(G_OBJECT_TYPE_NAME(display), "GdkX11Display")) {
+    return 1.0;
+  }
+  gint dpi = 0;  // In 1024ths of a dot per inch, or -1 if not set.
+  g_object_get(gtk_settings_get_default(), "gtk-xft-dpi", &dpi, nullptr);
+  return dpi > 0 ? CLAMP(dpi / 1024.0 / 96.0, 1.0, 4.0) : 1.0;
+}
+
+static void scale_method_call_cb(FlMethodChannel* channel,
+                                 FlMethodCall* method_call,
+                                 gpointer user_data) {
+  if (g_str_equal(fl_method_call_get_name(method_call), "get")) {
+    g_autoptr(FlValue) scale = fl_value_new_float(ui_scale());
+    fl_method_call_respond_success(method_call, scale, nullptr);
+  } else {
+    fl_method_call_respond_not_implemented(method_call, nullptr);
+  }
+}
+
+// Called when the font resolution changes, as when a screen with another
+// scale is plugged in or unplugged.
+static void scale_changed_cb(MyApplication* self) {
+  g_autoptr(FlValue) scale = fl_value_new_float(ui_scale());
+  fl_method_channel_invoke_method(self->scale_channel, "changed", scale,
+                                  nullptr, nullptr, nullptr);
+}
 
 // Called when first Flutter frame received.
 static void first_frame_cb(MyApplication* self, FlView* view) {
@@ -22,7 +58,10 @@ static void my_application_activate(GApplication* application) {
 
   GtkWindow* window =
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
-  gtk_window_set_default_size(window, 1540, 880);
+  // The Dart side draws everything this much larger, so the window has to be
+  // that much larger to hold the same.
+  const double scale = ui_scale();
+  gtk_window_set_default_size(window, 1540 * scale, 880 * scale);
 
   // If you want to use a header bar, uncomment the following lines.
   // Header bars are commonly used in GNOME based desktop environments and
@@ -55,6 +94,16 @@ static void my_application_activate(GApplication* application) {
   gtk_widget_realize(GTK_WIDGET(view));
 
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));
+
+  g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
+  self->scale_channel = fl_method_channel_new(
+      fl_engine_get_binary_messenger(fl_view_get_engine(view)), "tncode/scale",
+      FL_METHOD_CODEC(codec));
+  fl_method_channel_set_method_call_handler(self->scale_channel,
+                                            scale_method_call_cb, self, nullptr);
+  g_signal_connect_object(gtk_settings_get_default(), "notify::gtk-xft-dpi",
+                          G_CALLBACK(scale_changed_cb), self,
+                          G_CONNECT_SWAPPED);
 
   gtk_widget_grab_focus(GTK_WIDGET(view));
 }
@@ -106,6 +155,7 @@ static void my_application_shutdown(GApplication* application) {
 static void my_application_dispose(GObject* object) {
   MyApplication* self = MY_APPLICATION(object);
   g_clear_pointer(&self->dart_entrypoint_arguments, g_strfreev);
+  g_clear_object(&self->scale_channel);
   G_OBJECT_CLASS(my_application_parent_class)->dispose(object);
 }
 
