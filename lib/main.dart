@@ -55,8 +55,8 @@ class TncodeApp extends StatelessWidget {
 /// How many prompts, with their replies, the page shows.
 const _exchangeCount = 10;
 
-/// How many projects the project bar offers.
-const _projectCount = 5;
+/// How many sessions the session bar offers.
+const _sessionCount = 8;
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key, required this.options});
@@ -71,14 +71,24 @@ class _HomePageState extends State<HomePage> {
   List<Exchange>? _exchanges;
   Object? _error;
 
-  /// The projects on the project bar, by directory: those with the latest
-  /// messages, the latest first.
+  /// The sessions on the session bar: those with the latest messages, the
+  /// latest first.
+  List<SessionInfo> _sessions = const [];
+
+  /// The session that was asked for, by its path, and the one whose prompts
+  /// are shown, which is another until the load that follows a click on the
+  /// bar is done.
+  String? _session;
+  String? _shownSession;
+
+  /// Every project, by directory, the one with the latest message first.
   List<String> _projects = const [];
 
-  /// The project that was asked for, and the one whose prompts are shown,
-  /// which is another until the load that follows a click on the bar is done.
-  String? _project;
-  String? _shownProject;
+  /// The directory of the project that the session asked for belongs to.
+  /// That session is not on the bar yet when it has just been picked by its
+  /// project.
+  String? get _project =>
+      _store.sessions.where((s) => s.path == _session).firstOrNull?.projectDir;
 
   late bool _showTools = widget.options.showTools;
 
@@ -93,8 +103,6 @@ class _HomePageState extends State<HomePage> {
   /// followed by those entries.
   List<Object> _rows = const [];
 
-  /// The exchanges in [_rows] that come after one of another session.
-  var _sessionStarts = Set<Exchange>.identity();
   int _entryCount = 0;
 
   /// Which collapsible entries are open, each named by its session's path and
@@ -162,7 +170,7 @@ class _HomePageState extends State<HomePage> {
       final changed = await _store.refresh();
       final first = _exchanges == null;
       if (!mounted) return;
-      if (!changed && !first && _project == _shownProject) return;
+      if (!changed && !first && _session == _shownSession) return;
       var sessions = _store.sessions;
       // A session named on the command line is shown alone.
       final wanted = options.session;
@@ -173,43 +181,44 @@ class _HomePageState extends State<HomePage> {
         if (sessions.isEmpty) options.fail('no session matches "$wanted"');
       }
 
-      // Sessions come latest first, and so do the projects made from them.
-      final all = {for (final s in sessions) s.projectDir}.toList();
-      var project = _project;
+      // A project named on the command line opens at its latest session.
+      var path = _session;
       final named = options.project;
       if (first && named != null) {
-        project = all.where((dir) => _projectName(dir) == named).firstOrNull;
-        if (project == null) options.fail('no project matches "$named"');
+        path = sessions
+            .where((s) => _projectName(s.projectDir) == named)
+            .firstOrNull
+            ?.path;
+        if (path == null) options.fail('no project matches "$named"');
       }
-      // The project stays the one that was picked, whichever has the latest
-      // message, and stays on the bar when five others have later ones.
-      if (!all.contains(project)) project = all.firstOrNull;
-      final projects = all.take(_projectCount).toList();
-      if (project != null && !projects.contains(project)) {
-        projects.last = project;
-      }
-      final switched = !first && project != _shownProject;
+      // The session stays the one that was picked, whichever has the latest
+      // message, and stays on the bar when eight others have later ones.
+      final session =
+          sessions.where((s) => s.path == path).firstOrNull ??
+          sessions.firstOrNull;
+      final shown = sessions.take(_sessionCount).toList();
+      if (session != null && !shown.contains(session)) shown.last = session;
+      final switched = !first && session?.path != _shownSession;
 
-      final exchanges = await _store.recentExchanges(
-        sessions.where((s) => s.projectDir == project).toList(),
-        _exchangeCount,
-      );
+      final exchanges = await _store.recentExchanges([
+        ?session,
+      ], _exchangeCount);
       if (!mounted) return;
-      // Another project was clicked meanwhile: the load that follows this
+      // Another session was clicked meanwhile: the load that follows this
       // one shows it.
-      if (!first && _project != _shownProject && _project != project) {
+      if (!first && _session != _shownSession && _session != session?.path) {
         _stale = true;
         return;
       }
 
-      // Most changes are to sessions that are not on the page.
+      // Most changes are to sessions that are not the one on the page.
       final before = _exchanges;
       var same = before != null && before.length == exchanges.length;
       for (var i = 0; same && i < exchanges.length; i++) {
         same = identical(before![i], exchanges[i]);
       }
       // A view that is at its end stays there as messages arrive; one that
-      // has been scrolled back is left where it is. A project opens at its
+      // has been scrolled back is left where it is. A session opens at its
       // end.
       final follow = first
           ? !options.openAtTop
@@ -219,14 +228,16 @@ class _HomePageState extends State<HomePage> {
                         _scroll.position.maxScrollExtent);
       setState(() {
         _exchanges = exchanges;
-        _projects = projects;
-        _project = _shownProject = project;
+        _sessions = shown;
+        // Sessions come latest first, and so do the projects made from them.
+        _projects = {for (final s in sessions) s.projectDir}.toList();
+        _session = _shownSession = session?.path;
         _error = null;
         if (!same) _updateRows();
         if (switched) _atLatest = false;
       });
       if (same) return;
-      // On the first load, and when another project is opened, the list
+      // On the first load, and when another session is opened, the list
       // stays hidden until it has settled at its end, so it does not flash
       // its first messages.
       WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -255,8 +266,6 @@ class _HomePageState extends State<HomePage> {
         (e.toolResult?.toLowerCase().contains(_query) ?? false);
     final rows = <Object>[];
     final names = Map<Entry, (String, int)>.identity();
-    final sessionStarts = Set<Exchange>.identity();
-    String? lastPath;
     var entryCount = 0;
     for (final exchange in _exchanges ?? const <Exchange>[]) {
       final path = exchange.session.path;
@@ -271,8 +280,6 @@ class _HomePageState extends State<HomePage> {
             e,
       ];
       if (entries.isEmpty) continue;
-      if (lastPath != null && lastPath != path) sessionStarts.add(exchange);
-      lastPath = path;
       rows
         ..add(exchange)
         ..addAll(entries);
@@ -280,14 +287,22 @@ class _HomePageState extends State<HomePage> {
     }
     _rows = rows;
     _names = names;
-    _sessionStarts = sessionStarts;
     _entryCount = entryCount;
   }
 
+  void _selectSession(SessionInfo session) {
+    if (session.path == _session) return;
+    setState(() => _session = session.path);
+    _load();
+  }
+
+  /// Opens the latest session of [project].
   void _selectProject(String project) {
     if (project == _project) return;
-    setState(() => _project = project);
-    _load();
+    final latest = _store.sessions
+        .where((s) => s.projectDir == project)
+        .firstOrNull;
+    if (latest != null) _selectSession(latest);
   }
 
   void _openSearch() {
@@ -400,11 +415,7 @@ class _HomePageState extends State<HomePage> {
                 color: colors.surfaceContainerLow,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    _buildHeader(),
-                    if (_projects.isNotEmpty) _buildProjectBar(),
-                    if (_searching) _buildSearchBar(),
-                  ],
+                  children: [_buildHeader(), if (_searching) _buildSearchBar()],
                 ),
               ),
               Divider(height: 1, color: colors.outlineVariant),
@@ -424,10 +435,20 @@ class _HomePageState extends State<HomePage> {
                             : _projectName(_project!),
                         projectColor: _projectColor(_project ?? ''),
                         addFocus: _noteFocus,
+                        projectLabel: _projects.isEmpty
+                            ? null
+                            : _buildProjectPicker(),
                       ),
                   ],
                 ),
               ),
+              if (_sessions.isNotEmpty) ...[
+                Divider(height: 1, color: colors.outlineVariant),
+                Material(
+                  color: colors.surfaceContainerLow,
+                  child: _buildSessionBar(),
+                ),
+              ],
             ],
           ),
         ),
@@ -542,18 +563,107 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildProjectBar() {
+  /// The name of the project at the top of the notes, which opens a menu of
+  /// every project.
+  Widget _buildProjectPicker() {
+    final colors = Theme.of(context).colorScheme;
+    final current = _project ?? '';
+    return Center(
+      child: PopupMenuButton<String>(
+        tooltip: 'Open another project',
+        position: PopupMenuPosition.under,
+        color: colors.surfaceBright,
+        constraints: const BoxConstraints.tightFor(width: 340),
+        onSelected: _selectProject,
+        itemBuilder: (context) => [
+          for (final project in _projects)
+            PopupMenuItem(
+              value: project,
+              height: 34,
+              child: Row(
+                children: [
+                  // A long name leaves some room for its directory.
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 200),
+                    child: Text(
+                      _projectName(project),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: _mono.copyWith(
+                        fontSize: 12,
+                        fontWeight: project == current
+                            ? FontWeight.w700
+                            : FontWeight.w400,
+                        color: _projectColor(project),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      shortenHome(project),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                  if (_notes.openCount(project) > 0) ...[
+                    const SizedBox(width: 10),
+                    Text(
+                      '${_notes.openCount(project)} to do',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+        ],
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(
+                child: Text(
+                  _projectName(current),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: _mono.copyWith(
+                    fontSize: 12,
+                    color: _projectColor(current),
+                  ),
+                ),
+              ),
+              Icon(
+                Icons.arrow_drop_down,
+                size: 16,
+                color: colors.onSurfaceVariant,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSessionBar() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       child: Row(
         children: [
-          for (final (i, project) in _projects.indexed) ...[
+          for (final (i, session) in _sessions.indexed) ...[
             if (i > 0) const SizedBox(width: 8),
-            Flexible(
-              child: _ProjectButton(
-                project: project,
-                active: project == _project,
-                onPressed: () => _selectProject(project),
+            Expanded(
+              child: _SessionButton(
+                session: session,
+                active: session.path == _session,
+                onPressed: () => _selectSession(session),
               ),
             ),
           ],
@@ -658,10 +768,7 @@ class _HomePageState extends State<HomePage> {
                   constraints: const BoxConstraints(maxWidth: 960),
                   child: Column(
                     children: [
-                      if (_sessionStarts.contains(row))
-                        const _SessionBreak()
-                      else if (heading && i > 0)
-                        const SizedBox(height: 22),
+                      if (heading && i > 0) const SizedBox(height: 22),
                       panel,
                     ],
                   ),
@@ -806,66 +913,6 @@ class _ExchangeHeading extends StatelessWidget {
   }
 }
 
-/// The wavy line between a prompt and the one before it when they are of
-/// different sessions.
-class _SessionBreak extends StatelessWidget {
-  const _SessionBreak();
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 20),
-      child: FractionallySizedBox(
-        widthFactor: 2 / 3,
-        child: CustomPaint(
-          size: const Size(double.infinity, 8),
-          painter: _WavePainter(
-            Theme.of(context).colorScheme.onSurfaceVariant
-                .withValues(alpha: 0.5),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _WavePainter extends CustomPainter {
-  const _WavePainter(this.color);
-
-  final Color color;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    // Whole waves, centred, so that both ends are cut at the same point.
-    const length = 16.0;
-    final count = (size.width / length).floor();
-    final middle = size.height / 2;
-    var x = (size.width - count * length) / 2;
-    final path = Path()..moveTo(x, middle);
-    for (var i = 0; i < count; i++, x += length) {
-      path
-        ..quadraticBezierTo(x + length / 4, 0, x + length / 2, middle)
-        ..quadraticBezierTo(
-          x + length * 3 / 4,
-          size.height,
-          x + length,
-          middle,
-        );
-    }
-    canvas.drawPath(
-      path,
-      Paint()
-        ..color = color
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5
-        ..strokeCap = StrokeCap.round,
-    );
-  }
-
-  @override
-  bool shouldRepaint(_WavePainter old) => old.color != color;
-}
-
 class _Message extends StatelessWidget {
   const _Message(this.text);
 
@@ -888,51 +935,91 @@ class _Message extends StatelessWidget {
   }
 }
 
-/// A button on the project bar, in the project's colour, filled in when its
-/// project is the one shown.
-class _ProjectButton extends StatelessWidget {
-  const _ProjectButton({
-    required this.project,
+/// A button on the session bar: the session's project, in a pill of the
+/// project's colour, above the session's title. It is filled in when its
+/// session is the one shown.
+class _SessionButton extends StatelessWidget {
+  const _SessionButton({
+    required this.session,
     required this.active,
     required this.onPressed,
   });
 
-  /// The project's directory.
-  final String project;
+  final SessionInfo session;
   final bool active;
   final VoidCallback onPressed;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final color = _projectColor(project);
+    final color = _projectColor(session.projectDir);
     return Tooltip(
-      message: shortenHome(project),
-      child: OutlinedButton.icon(
-        onPressed: onPressed,
-        icon: Icon(active ? Icons.folder_open : Icons.folder_outlined),
-        label: Text(
-          _projectName(project),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        style: OutlinedButton.styleFrom(
-          foregroundColor: active ? color : colors.onSurfaceVariant,
-          iconColor: color,
-          iconSize: 15,
-          backgroundColor: active ? color.withValues(alpha: 0.16) : null,
-          side: BorderSide(
-            color: active
-                ? color.withValues(alpha: 0.7)
-                : colors.outlineVariant,
+      message: '${session.title}\n${shortenHome(session.projectDir)}',
+      child: Builder(
+        builder: (context) => OutlinedButton(
+          onPressed: onPressed,
+          style: OutlinedButton.styleFrom(
+            foregroundColor: active
+                ? colors.onSurface
+                : colors.onSurfaceVariant,
+            backgroundColor: active ? color.withValues(alpha: 0.16) : null,
+            side: BorderSide(
+              color: active
+                  ? color.withValues(alpha: 0.7)
+                  : colors.outlineVariant,
+            ),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(6),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            // The compact density of a desktop would take the padding above
+            // and below away.
+            visualDensity: VisualDensity.standard,
+            minimumSize: Size.zero,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-          textStyle: _mono.copyWith(
-            fontSize: 12,
-            fontWeight: active ? FontWeight.w700 : FontWeight.w400,
+          // The buttons share the bar's width equally, and each one's text
+          // starts at its left edge.
+          child: Align(
+            alignment: Alignment.centerLeft,
+            heightFactor: 1,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 7,
+                    vertical: 1,
+                  ),
+                  decoration: ShapeDecoration(
+                    color: color,
+                    shape: const StadiumBorder(),
+                  ),
+                  child: Text(
+                    _projectName(session.projectDir),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: _mono.copyWith(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: colors.surface,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  session.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+                  ),
+                ),
+              ],
+            ),
           ),
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          visualDensity: VisualDensity.compact,
         ),
       ),
     );

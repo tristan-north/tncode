@@ -8,7 +8,8 @@ const _usage = '''
 Usage: tncode [options]
 
   --session=<id>|latest   Show only this session (an id or the start of one).
-  --project=<name>        Open at this project (the name of its directory).
+  --project=<name>        Open at the latest session of this project (the
+                          name of its directory).
   --notes=<file>          Keep the notes in this file, not the usual one.
   --tools                 Start with tool calls shown.
   --top                   Open at the oldest prompt shown, not the latest.
@@ -83,8 +84,8 @@ class LaunchOptions {
   /// `latest`, or the start of a session id.
   final String? session;
 
-  /// The name of the directory of the project to open at. Null for the one
-  /// with the latest message.
+  /// The name of the directory of the project whose latest session to open
+  /// at. Null for the session with the latest message.
   final String? project;
 
   /// The file the notes are kept in. Null for the usual one.

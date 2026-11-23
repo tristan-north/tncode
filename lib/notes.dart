@@ -246,6 +246,7 @@ class NotesSidebar extends StatefulWidget {
     required this.projectName,
     required this.projectColor,
     required this.addFocus,
+    this.projectLabel,
   });
 
   static const width = 320.0;
@@ -256,6 +257,9 @@ class NotesSidebar extends StatefulWidget {
   final String project;
   final String projectName;
   final Color projectColor;
+
+  /// Shown at the top in place of the project's name, when given.
+  final Widget? projectLabel;
 
   /// The focus of the box that a note is added in.
   final FocusNode addFocus;
@@ -432,16 +436,18 @@ class _NotesSidebarState extends State<NotesSidebar> {
             ),
           ),
           Expanded(
-            child: Text(
-              widget.projectName,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.center,
-              style: monoStyle.copyWith(
-                fontSize: 12,
-                color: widget.projectColor,
-              ),
-            ),
+            child:
+                widget.projectLabel ??
+                Text(
+                  widget.projectName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: monoStyle.copyWith(
+                    fontSize: 12,
+                    color: widget.projectColor,
+                  ),
+                ),
           ),
           SizedBox(
             width: _headerSide,
