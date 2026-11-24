@@ -30,10 +30,10 @@ class Mark {
 }
 
 class Annotation {
-  Annotation(this.marks);
+  Annotation(this.mark);
 
-  /// More than one when the selection ran over several replies.
-  final List<Mark> marks;
+  /// What it is about.
+  final Mark mark;
 
   /// Empty only while the annotation is first being typed.
   String comment = '';
@@ -66,21 +66,29 @@ class Annotations extends ChangeNotifier {
 
   void _changed() => notifyListeners();
 
-  Iterable<(Annotation, Mark)> _marksIn(EntryName reply) sync* {
-    for (final annotation in _all) {
-      for (final mark in annotation.marks) {
-        if (mark.entry == reply) yield (annotation, mark);
-      }
+  /// The words being picked with Shift held, which are drawn as an
+  /// annotation in the making.
+  Mark? _picked;
+
+  void _pick(Mark? mark) {
+    final picked = _picked;
+    if (mark?.entry == picked?.entry &&
+        mark?.start == picked?.start &&
+        mark?.end == picked?.end) {
+      return;
     }
+    _picked = mark;
+    notifyListeners();
   }
+
+  Iterable<Annotation> _in(EntryName reply) =>
+      _all.where((annotation) => annotation.mark.entry == reply);
 
   /// The saved annotations that are about [reply], in the order of what
   /// they are about.
-  List<Annotation> _savedIn(EntryName reply) {
-    final marks = _marksIn(reply).where((m) => m.$1.comment.isNotEmpty).toList()
-      ..sort((a, b) => a.$2.start.compareTo(b.$2.start));
-    return {for (final (annotation, _) in marks) annotation}.toList();
-  }
+  List<Annotation> _savedIn(EntryName reply) =>
+      _in(reply).where((annotation) => annotation.comment.isNotEmpty).toList()
+        ..sort((a, b) => a.mark.start.compareTo(b.mark.start));
 
   int countIn(EntryName reply) => _savedIn(reply).length;
 
@@ -90,9 +98,7 @@ class Annotations extends ChangeNotifier {
     return [
       for (final annotation in _savedIn(reply))
         [
-          annotation.marks
-              .map((mark) => mark.quote)
-              .join('\n\n')
+          annotation.mark.quote
               .split('\n')
               .map((line) => line.isEmpty ? '>' : '> $line')
               .join('\n'),
@@ -127,7 +133,7 @@ class _AnnotatableState extends State<Annotatable> {
   _RenderHighlights get _highlights =>
       _highlightsKey.currentContext!.findRenderObject() as _RenderHighlights;
 
-  Iterable<(Annotation, Mark)> get _marks => widget.board._marksIn(widget.name);
+  Iterable<Annotation> get _annotations => widget.board._in(widget.name);
 
   @override
   void initState() {
@@ -142,24 +148,36 @@ class _AnnotatableState extends State<Annotatable> {
     super.dispose();
   }
 
-  double get _top => _highlights.localToGlobal(Offset.zero).dy;
-
   /// The selected part of this reply, if any of it is selected.
   Mark? _selected() {
     if (!_selection.registered) return null;
     final range = _selection.selection.range;
     if (range == null) return null;
-    final start = math.min(range.startOffset, range.endOffset);
-    final end = math.max(range.startOffset, range.endOffset);
+    return _mark(
+      math.min(range.startOffset, range.endOffset),
+      math.max(range.startOffset, range.endOffset),
+    );
+  }
+
+  /// The part of this reply between [start] and [end], if there is text in
+  /// it.
+  Mark? _mark(int start, int end) {
     final quote = _highlights.textIn(start, end).trim();
     if (quote.isEmpty) return null;
     return Mark(widget.name, start, end, quote);
   }
 
+  /// The word of this reply at [position] on the screen.
+  Mark? _wordAt(Offset position) {
+    final word = _highlights.wordAt(_highlights.globalToLocal(position));
+    return word == null ? null : _mark(word.$1, word.$2);
+  }
+
   /// The annotation whose highlight is at [position] on the screen.
   Annotation? _annotationAt(Offset position) {
     final local = _highlights.globalToLocal(position);
-    for (final (annotation, mark) in _marks) {
+    for (final annotation in _annotations) {
+      final mark = annotation.mark;
       final boxes = _highlights.boxes(mark.start, mark.end);
       if (boxes.any((box) => box.contains(local))) return annotation;
     }
@@ -173,13 +191,16 @@ class _AnnotatableState extends State<Annotatable> {
       builder: (context, child) => _Highlights(
         key: _highlightsKey,
         ranges: [
-          for (final (annotation, mark) in _marks)
+          for (final annotation in _annotations)
             (
-              mark.start,
-              mark.end,
+              annotation.mark.start,
+              annotation.mark.end,
               annotation == widget.board._open ||
                   annotation == widget.board._hovered,
             ),
+          if (widget.board._picked case final mark?
+              when mark.entry == widget.name)
+            (mark.start, mark.end, true),
         ],
         child: child,
       ),
@@ -298,6 +319,41 @@ class _RenderHighlights extends RenderProxyBox {
       final b = math.min(end - piece.offset + piece.from, piece.to);
       if (a < b) yield (piece, TextSelection(baseOffset: a, extentOffset: b));
     }
+  }
+
+  /// The start and the end of the word drawn at [point]. A word is what
+  /// stands between two spaces, punctuation included.
+  (int, int)? wordAt(Offset point) {
+    bool isSpace(String character) => character.trim().isEmpty;
+    for (final piece in _pieces()) {
+      if (piece.clip?.contains(point) == false) continue;
+      final paragraph = piece.paragraph;
+      final local = paragraph.globalToLocal(point, ancestor: this);
+      if (!(Offset.zero & paragraph.size).contains(local)) continue;
+      final text = piece.text;
+      final at = paragraph.getPositionForOffset(local).offset;
+      // The position is between two characters, and the pointer can be on
+      // either.
+      for (final index in [at, at - 1]) {
+        if (index < piece.from || index >= piece.to) continue;
+        if (isSpace(text[index])) continue;
+        var start = index, end = index + 1;
+        while (start > piece.from && !isSpace(text[start - 1])) {
+          start--;
+        }
+        while (end < piece.to && !isSpace(text[end])) {
+          end++;
+        }
+        final boxes = paragraph.getBoxesForSelection(
+          TextSelection(baseOffset: start, extentOffset: end),
+          boxHeightStyle: BoxHeightStyle.max,
+        );
+        if (!boxes.any((box) => box.toRect().contains(local))) continue;
+        final shift = piece.offset - piece.from;
+        return (start + shift, end + shift);
+      }
+    }
+    return null;
   }
 
   /// Where the text between [start] and [end] is drawn. Each box is as tall
@@ -432,7 +488,10 @@ class _RenderHighlights extends RenderProxyBox {
 }
 
 /// Wraps the page so that selecting text in a reply opens a box to comment
-/// on it, and clicking a highlight opens the box on its annotation.
+/// on it, and clicking a highlight opens the box on its annotation. With
+/// Shift held, the word under the pointer lights up, and clicking one word
+/// and then another of the same reply opens the box on those two and all
+/// that is between them.
 class AnnotationLayer extends StatefulWidget {
   const AnnotationLayer({
     super.key,
@@ -462,8 +521,140 @@ class _AnnotationLayerState extends State<AnnotationLayer> {
   /// Where the primary button went down, if it is what is down.
   Offset? _down;
 
+  /// Whether words are being picked, which is while Shift is held, and
+  /// whether they were when the button went down.
+  bool _picking = false, _downPicking = false;
+
+  /// The first word picked, until the second is, and the word that the
+  /// pointer was last on since. The words are lit up to that one while the
+  /// pointer is between words, so that the light does not flicker as it
+  /// moves along a line.
+  Mark? _first, _reached;
+
+  /// Where the pointer is, if it is over the page, and whether there is a
+  /// word to pick there.
+  Offset? _pointer;
+  bool _onWord = false;
+
+  /// Whether the pointer has moved since Shift went down, and whether an
+  /// annotation has been made since then.
+  bool _movedInShift = false, _madeInShift = false;
+
+  @override
+  void initState() {
+    super.initState();
+    HardwareKeyboard.instance.addHandler(_key);
+  }
+
+  bool _key(KeyEvent event) {
+    _sync();
+    return false;
+  }
+
+  /// Starts or stops picking words, and shows the ones picked so far.
+  void _sync({bool moved = false}) {
+    final shift = HardwareKeyboard.instance.isShiftPressed;
+    if (!shift) {
+      _movedInShift = _madeInShift = false;
+    } else if (moved) {
+      _movedInShift = true;
+    }
+    // Shift is also held to type a capital letter, which should not light
+    // up the word that the pointer was left on. Nor should the words by a
+    // new annotation light up before Shift is let go.
+    final typing =
+        FocusManager.instance.primaryFocus?.context
+            ?.findAncestorWidgetOfExactType<EditableText>() !=
+        null;
+    final picking = shift && !_madeInShift && (_movedInShift || !typing);
+    if (!picking) _first = null;
+    final first = _first;
+    if (first == null) _reached = null;
+    final position = _pointer;
+    final word = picking && position != null ? _wordAt(position) : null;
+    if (picking != _picking || (word != null) != _onWord) {
+      setState(() {
+        _picking = picking;
+        _onWord = word != null;
+      });
+    }
+    if (first != null && word != null) _reached = word;
+    widget.board._pick(first == null ? word : _span(first, _reached));
+  }
+
+  /// The word at [position] that can be picked. Once one word is picked,
+  /// that is only a word of the same reply.
+  Mark? _wordAt(Offset position) {
+    final first = _first;
+    for (final reply in widget.board._replies) {
+      if (first != null && reply.widget.name != first.entry) continue;
+      final word = reply._wordAt(position);
+      if (word != null) return word;
+    }
+    return null;
+  }
+
+  /// The words [a] and [b] of one reply and all that is between them. Null
+  /// if the reply is too far off the screen to be built.
+  Mark? _span(Mark a, Mark? b) {
+    if (b == null) return a;
+    for (final reply in widget.board._replies) {
+      if (reply.widget.name == a.entry) {
+        return reply._mark(math.min(a.start, b.start), math.max(a.end, b.end));
+      }
+    }
+    return null;
+  }
+
+  /// Picks the word at [position]: the first of an annotation, or the
+  /// second, which opens the box.
+  void _pickAt(Offset position) {
+    final word = _wordAt(position);
+    if (word == null) return;
+    final first = _first;
+    if (first == null) {
+      _first = word;
+      return _sync();
+    }
+    final mark = _span(first, word);
+    if (mark == null) return;
+    final annotation = Annotation(mark);
+    widget.board._all.add(annotation);
+    _madeInShift = true;
+    _sync();
+    _show(annotation, position);
+  }
+
+  void _moved(PointerEvent event) {
+    _pointer = event.position;
+    _sync(moved: event is PointerHoverEvent);
+  }
+
+  /// Turns the wheel for the page, which does not get it while words are
+  /// picked.
+  void _wheel(PointerSignalEvent event) {
+    final scroll = widget.scroll;
+    if (!_picking || event is! PointerScrollEvent || !scroll.hasClients) {
+      return;
+    }
+    final position = scroll.position;
+    final delta = event.scrollDelta;
+    position.jumpTo(
+      (position.pixels + (delta.dy != 0 ? delta.dy : delta.dx)).clamp(
+        position.minScrollExtent,
+        position.maxScrollExtent,
+      ),
+    );
+    // Another word is under the pointer once the page has moved.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _sync();
+    });
+  }
+
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_key);
+    widget.board._picked = null;
     final open = _open;
     if (open != null && open.comment.isEmpty) widget.board._all.remove(open);
     widget.board._open = null;
@@ -476,6 +667,10 @@ class _AnnotationLayerState extends State<AnnotationLayer> {
     final down = _down;
     if (down == null) return;
     final click = (event.position - down).distance < kTouchSlop;
+    if (_downPicking) {
+      if (click && _picking) _pickAt(event.position);
+      return;
+    }
     // The selection takes in the pointer's last movement at the end of the
     // frame.
     WidgetsBinding.instance
@@ -487,18 +682,18 @@ class _AnnotationLayerState extends State<AnnotationLayer> {
 
   void _released(Offset position, {required bool click}) {
     final board = widget.board;
-    final replies = board._replies.toList()
-      ..sort((a, b) => a._top.compareTo(b._top));
+    final replies = board._replies;
     final marks = [for (final reply in replies) ?reply._selected()];
-    if (marks.isNotEmpty) {
-      final annotation = Annotation(marks);
+    // A selection that runs over several replies is not annotated.
+    if (marks.length == 1) {
+      final annotation = Annotation(marks.single);
       board._all.add(annotation);
       // The highlight takes the place of the selection.
       replies.first.context
           .findAncestorStateOfType<SelectableRegionState>()
           ?.clearSelection();
       _show(annotation, position);
-    } else if (click) {
+    } else if (marks.isEmpty && click) {
       for (final reply in replies) {
         final annotation = reply._annotationAt(position);
         if (annotation != null) return _show(annotation, position);
@@ -539,7 +734,7 @@ class _AnnotationLayerState extends State<AnnotationLayer> {
     final selection = _field.selection;
     final text = selection.isValid && !selection.isCollapsed
         ? selection.textInside(_field.text)
-        : _open!.marks.map((mark) => mark.quote).join('\n\n');
+        : _open!.mark.quote;
     Clipboard.setData(ClipboardData(text: text));
   }
 
@@ -548,11 +743,25 @@ class _AnnotationLayerState extends State<AnnotationLayer> {
     final open = _open;
     return Stack(
       children: [
-        Listener(
-          onPointerDown: (event) =>
-              _down = event.buttons == kPrimaryButton ? event.position : null,
-          onPointerUp: _pointerUp,
-          child: widget.child,
+        MouseRegion(
+          cursor: _onWord ? SystemMouseCursors.click : MouseCursor.defer,
+          onEnter: _moved,
+          onHover: _moved,
+          onExit: (_) {
+            _pointer = null;
+            if (mounted) _sync();
+          },
+          child: Listener(
+            onPointerDown: (event) {
+              _down = event.buttons == kPrimaryButton ? event.position : null;
+              _downPicking = _picking;
+            },
+            onPointerUp: _pointerUp,
+            onPointerSignal: _wheel,
+            // While words are picked, the page gets no clicks, which would
+            // select text.
+            child: AbsorbPointer(absorbing: _picking, child: widget.child),
+          ),
         ),
         if (open != null)
           Positioned.fill(

@@ -153,20 +153,77 @@ void main() {
     expect(board.count, 2);
   });
 
-  testWidgets('a selection over two replies makes one annotation', (
+  /// The middle of the first word of the text [text].
+  Offset word(WidgetTester tester, String text) =>
+      tester.getRect(find.textContaining(text, findRichText: true)).centerLeft +
+      const Offset(8, 0);
+
+  testWidgets('with Shift held, two clicks annotate the words between them', (
     tester,
   ) async {
     await pumpPage(tester);
-    await select(tester, 'Last paragraph', 'A second reply');
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: word(tester, 'item one'));
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.pump();
+    await mouse.down(word(tester, 'item one'));
+    await mouse.up();
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField), findsNothing);
+
+    // The second word can be the earlier one.
+    await mouse.moveTo(word(tester, 'First paragraph'));
+    await mouse.down(word(tester, 'First paragraph'));
+    await mouse.up();
+    await tester.pumpAndSettle();
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    expect(find.byType(TextField), findsOneWidget);
+    tester.testTextInput.enterText('Picked.');
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(
+      board.export(('session', 1)),
+      '> First paragraph with bold and code in it.\n> • item\nPicked.',
+    );
+  });
+
+  testWidgets('letting go of Shift forgets the first word', (tester) async {
+    await pumpPage(tester);
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: word(tester, 'item one'));
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await mouse.down(word(tester, 'item one'));
+    await mouse.up();
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await mouse.moveTo(word(tester, 'Last paragraph'));
+    await mouse.down(word(tester, 'Last paragraph'));
+    await mouse.up();
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField), findsNothing);
+
+    // The second word has to be in the reply of the first.
+    await mouse.moveTo(word(tester, 'A second reply'));
+    await mouse.down(word(tester, 'A second reply'));
+    await mouse.up();
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField), findsNothing);
+
+    await mouse.moveTo(word(tester, 'some code'));
+    await mouse.down(word(tester, 'some code'));
+    await mouse.up();
+    await tester.pumpAndSettle();
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
     tester.testTextInput.enterText('Both.');
-    await clickAway(tester);
-    expect(board.count, 1);
-    // It is copied whole from either reply.
-    for (final reply in [('session', 1), ('session', 2)]) {
-      expect(
-        board.export(reply),
-        '> Last paragraph.\n>\n> A second reply.\nBoth.',
-      );
-    }
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(board.export(('session', 1)), '> some code\n> Last\nBoth.');
+  });
+
+  testWidgets('a selection over two replies is not annotated', (tester) async {
+    await pumpPage(tester);
+    await select(tester, 'Last paragraph', 'A second reply');
+    expect(find.byType(TextField), findsNothing);
+    expect(board.count, 0);
   });
 }
