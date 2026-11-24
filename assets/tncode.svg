@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- The app in small: a project pill above a prompt and Claude's reply. -->
+  <rect x="6" y="6" width="116" height="116" rx="26" fill="#1c1f24"/>
+  <rect x="6.75" y="6.75" width="114.500" height="114.500" rx="25.250" fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="1.500"/>
+
+  <rect x="24" y="24" width="46" height="15" rx="7.500" fill="#7fe0b0"/>
+
+  <rect x="24" y="48" width="80" height="22" rx="6" fill="#3a404a"/>
+  <rect x="30" y="53.500" width="4.500" height="11" rx="2.250" fill="#a9c1ff"/>
+  <rect x="41" y="56" width="50" height="6" rx="3" fill="#e6e9ef"/>
+
+  <rect x="24" y="76" width="80" height="29" rx="6" fill="#2b3038"/>
+  <rect x="30" y="81.500" width="4.500" height="18" rx="2.250" fill="#d8c58d"/>
+  <rect x="41" y="82.500" width="54" height="6" rx="3" fill="#b9bfc9"/>
+  <rect x="41" y="92.500" width="36" height="6" rx="3" fill="#b9bfc9"/>
+</svg>
