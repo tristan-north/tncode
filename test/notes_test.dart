@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:tncode/notes.dart';
+import 'package:tncode/notes_sidebar.dart';
 
 void main() {
   late Directory dir;
@@ -75,13 +76,7 @@ void main() {
           body: Row(
             children: [
               const Spacer(),
-              NotesSidebar(
-                notes: notes,
-                project: '/p',
-                projectName: 'p',
-                projectColor: const Color(0xFFFFFFFF),
-                addFocus: focus,
-              ),
+              NotesSidebar(notes: notes, project: '/p', addFocus: focus),
             ],
           ),
         ),
@@ -117,13 +112,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: NotesSidebar(
-            notes: notes,
-            project: '/p',
-            projectName: 'p',
-            projectColor: const Color(0xFFFFFFFF),
-            addFocus: focus,
-          ),
+          body: NotesSidebar(notes: notes, project: '/p', addFocus: focus),
         ),
       ),
     );

@@ -4,6 +4,8 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:tncode/annotation_highlights.dart';
+import 'package:tncode/annotation_layer.dart';
 import 'package:tncode/annotations.dart';
 import 'package:tncode/markdown.dart';
 
@@ -225,5 +227,19 @@ void main() {
     await select(tester, 'Last paragraph', 'A second reply');
     expect(find.byType(TextField), findsNothing);
     expect(board.count, 0);
+  });
+
+  testWidgets('clearing annotations closes an open comment box', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+    await select(tester, 'Last paragraph', 'Last paragraph');
+    expect(find.byType(TextField), findsOneWidget);
+
+    board.clear();
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField), findsNothing);
+    expect(board.count, 0);
+    expect(board.open, isNull);
   });
 }

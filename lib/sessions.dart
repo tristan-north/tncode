@@ -4,6 +4,8 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'paths.dart';
+
 /// Reads Claude Code session transcripts from `~/.claude/projects`.
 ///
 /// Each subdirectory there is one project (named after its working directory
@@ -42,6 +44,9 @@ class EntryImage {
   final int? height;
 }
 
+/// An entry, named by its session's path and its position in the session.
+typedef EntryName = (String, int);
+
 enum EntryKind { user, assistant, thinking, tool, output, note }
 
 class Entry {
@@ -66,54 +71,6 @@ class Entry {
   bool toolError = false;
 }
 
-class Conversation {
-  Conversation({
-    required this.entries,
-    this.gitBranch,
-    this.model,
-    this.lastActivity,
-    this.totalTokens = 0,
-  });
-
-  final List<Entry> entries;
-  final String? gitBranch;
-  final String? model;
-  final DateTime? lastActivity;
-
-  /// Input plus output tokens, summed over every API response.
-  final int totalTokens;
-}
-
-String? _env(String name) {
-  final value = Platform.environment[name];
-  return value == null || value.isEmpty ? null : value;
-}
-
-/// The user's home directory, without a trailing slash, or null when HOME is
-/// not set.
-String? homeDir() {
-  final home = _env('HOME');
-  if (home == null || home == '/') return home;
-  return home.endsWith('/') ? home.substring(0, home.length - 1) : home;
-}
-
-/// Where Claude Code keeps its session transcripts, or null when neither
-/// CLAUDE_CONFIG_DIR nor HOME says where to look.
-String? claudeProjectsDir() {
-  final home = homeDir();
-  final config =
-      _env('CLAUDE_CONFIG_DIR') ?? (home == null ? null : '$home/.claude');
-  return config == null ? null : '$config/projects';
-}
-
-/// Replaces a leading home directory in [path] with `~`.
-String shortenHome(String path) {
-  final home = homeDir();
-  if (home == null || home == '/') return path;
-  if (path == home) return '~';
-  return path.startsWith('$home/') ? '~${path.substring(home.length)}' : path;
-}
-
 /// The size and modification time of a transcript, which tell whether it has
 /// to be read again.
 typedef _Stamp = ({int size, int modified});
@@ -122,8 +79,15 @@ typedef _Stamp = ({int size, int modified});
 /// what it has read, so that a [refresh] reads only the transcripts that
 /// have changed since the one before.
 class SessionStore {
+  /// Reads the transcripts under [root], which is [claudeProjectsDir] unless
+  /// another directory is given.
+  SessionStore({String? root}) : _root = root ?? claudeProjectsDir();
+
+  final String? _root;
   final _scanned = <String, ({_Stamp stamp, SessionInfo? info})>{};
-  final _parsed = <String, ({SessionInfo info, List<Exchange> exchanges})>{};
+
+  /// The exchanges of the session that was last asked for.
+  ({SessionInfo info, List<Exchange> exchanges})? _parsed;
   bool _loaded = false;
 
   /// Every session, most recently active first, as of the last [refresh].
@@ -135,7 +99,7 @@ class SessionStore {
   /// The first call reads every transcript in full, a few hundred megabytes
   /// of them, so the files are shared out between several isolates.
   Future<bool> refresh() async {
-    final root = claudeProjectsDir();
+    final root = _root;
     final stamps = root == null ? <String, _Stamp>{} : await _runStamps(root);
     final changed = {
       for (final MapEntry(key: path, value: stamp) in stamps.entries)
@@ -163,41 +127,19 @@ class SessionStore {
     return true;
   }
 
-  /// The [count] most recent exchanges of [among], which must be some of
-  /// [sessions] in the same order. The oldest exchange comes first.
+  /// The [count] latest exchanges of [session], which must be one of
+  /// [sessions]. The oldest comes first.
   ///
   /// The exchanges of a session that has not changed since the last call are
   /// the same objects as then.
-  Future<List<Exchange>> recentExchanges(
-    List<SessionInfo> among,
-    int count,
-  ) async {
-    final recent = <Exchange>[];
-    final used = <String>{};
-    for (final session in among) {
-      // No prompt of a session is later than the session's last message, so
-      // once this session cannot displace anything, neither can a later one.
-      if (recent.length >= count &&
-          !recent[count - 1].time.isBefore(session.lastActivity)) {
-        break;
-      }
-      used.add(session.path);
-      var parsed = _parsed[session.path];
-      if (parsed == null || !identical(parsed.info, session)) {
-        parsed = (info: session, exchanges: await _runExchanges(session));
-        _parsed[session.path] = parsed;
-      }
-      recent.addAll(parsed.exchanges);
-      recent.sort((a, b) {
-        final byTime = b.time.compareTo(a.time);
-        return byTime != 0 ? byTime : b.index.compareTo(a.index);
-      });
-      if (recent.length > count) recent.length = count;
+  Future<List<Exchange>> recentExchanges(SessionInfo session, int count) async {
+    var parsed = _parsed;
+    if (parsed == null || !identical(parsed.info, session)) {
+      parsed = (info: session, exchanges: await _runExchanges(session));
+      _parsed = parsed;
     }
-    // Only the sessions that were needed this time are likely to be needed
-    // next time.
-    _parsed.removeWhere((path, _) => !used.contains(path));
-    return recent.reversed.toList();
+    final all = parsed.exchanges;
+    return all.sublist(all.length > count ? all.length - count : 0);
   }
 }
 
@@ -216,8 +158,10 @@ Future<List<Exchange>> _runExchanges(SessionInfo session) =>
 /// Tells when a transcript may have changed, by watching the projects
 /// directory and each project's directory in it.
 class SessionWatcher {
-  SessionWatcher(this.onChange) {
-    final root = claudeProjectsDir();
+  /// Watches [root], which is [claudeProjectsDir] unless another directory
+  /// is given.
+  SessionWatcher(this.onChange, {String? root}) {
+    root ??= claudeProjectsDir();
     if (root == null) return;
     _watch(root, isRoot: true);
     try {
@@ -287,7 +231,7 @@ List<Exchange> _exchanges(SessionInfo session) {
   final exchanges = <Exchange>[];
   final List<Entry> entries;
   try {
-    entries = _parseConversation(session.path).entries;
+    entries = _parseConversation(session.path);
   } on FileSystemException {
     return exchanges; // Unreadable file: leave it out.
   }
@@ -531,43 +475,22 @@ SessionInfo? _scanSession(File file) {
 
 const _maxResultChars = 20000;
 
-Conversation _parseConversation(String path) {
+/// The entries of the transcript at [path], in the order they were written.
+List<Entry> _parseConversation(String path) {
   final entries = <Entry>[];
   final tools = <String, Entry>{};
-  // One API response is stored as several lines, one per content block, each
-  // repeating the response's usage; keyed by response id to count it once.
-  final tokensByResponse = <String, int>{};
-  String? gitBranch, model;
-  DateTime? lastActivity;
-
   for (final line in _lines(path)) {
     final json = _decode(line);
     if (json == null) continue;
     if (json['isSidechain'] == true || json['isMeta'] == true) continue;
-    final type = json['type'];
-    if (type != 'user' && type != 'assistant') continue;
-
-    if (json['gitBranch'] case final String branch when branch.isNotEmpty) {
-      gitBranch = branch;
-    }
-    lastActivity = _time(json) ?? lastActivity;
-
-    if (type == 'user') {
-      _addUserMessage(json, entries, tools);
-    } else {
-      final usage = _addAssistantMessage(json, entries, tools);
-      if (usage == null) continue;
-      model = usage.model ?? model;
-      tokensByResponse[usage.responseId] = usage.input + usage.output;
+    switch (json['type']) {
+      case 'user':
+        _addUserMessage(json, entries, tools);
+      case 'assistant':
+        _addAssistantMessage(json, entries, tools);
     }
   }
-  return Conversation(
-    entries: entries,
-    gitBranch: gitBranch,
-    model: model,
-    lastActivity: lastActivity,
-    totalTokens: tokensByResponse.values.fold(0, (sum, n) => sum + n),
-  );
+  return entries;
 }
 
 DateTime? _time(Map<String, dynamic> json) {
@@ -575,38 +498,16 @@ DateTime? _time(Map<String, dynamic> json) {
   return value is String ? DateTime.tryParse(value)?.toLocal() : null;
 }
 
-typedef _Usage = ({String responseId, String? model, int input, int output});
-
-int _int(Object? value) => value is int ? value : 0;
-
-/// Adds the entries of one assistant line and returns the usage of the API
-/// response it belongs to, or null when the line records none.
-_Usage? _addAssistantMessage(
+void _addAssistantMessage(
   Map<String, dynamic> json,
   List<Entry> entries,
   Map<String, Entry> tools,
 ) {
   final message = json['message'];
-  if (message is! Map) return null;
+  if (message is! Map) return;
   final content = message['content'];
-  if (content is! List) return null;
+  if (content is! List) return;
   final time = _time(json);
-
-  // Claude Code writes its own notices (an API error, say) as assistant
-  // messages with the model "<synthetic>"; those have no model or usage.
-  final rawModel = message['model'];
-  final model = rawModel is String && !rawModel.startsWith('<')
-      ? rawModel
-      : null;
-  final usage = message['usage'];
-  var input = 0, output = 0;
-  if (model != null && usage is Map) {
-    input =
-        _int(usage['input_tokens']) +
-        _int(usage['cache_read_input_tokens']) +
-        _int(usage['cache_creation_input_tokens']);
-    output = _int(usage['output_tokens']);
-  }
 
   for (final block in content.whereType<Map>()) {
     switch (block['type']) {
@@ -635,10 +536,6 @@ _Usage? _addAssistantMessage(
         if (id is String) tools[id] = entry;
     }
   }
-
-  final id = message['id'];
-  if (id is! String || model == null) return null;
-  return (responseId: id, model: model, input: input, output: output);
 }
 
 void _addUserMessage(

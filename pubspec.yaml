@@ -1,5 +1,5 @@
 name: tncode
-description: "A new Flutter project."
+description: "A Linux desktop viewer for Claude Code sessions."
 publish_to: 'none'
 version: 0.1.0+1
 

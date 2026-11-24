@@ -4,20 +4,6 @@ import 'dart:ui' as ui;
 import 'package:flutter/rendering.dart';
 import 'package:material_ui/material_ui.dart';
 
-const _usage = '''
-Usage: tncode [options]
-
-  --session=<id>|latest   Show only this session (an id or the start of one).
-  --project=<name>        Open at the latest session of this project (the
-                          name of its directory).
-  --notes=<file>          Keep the notes in this file, not the usual one.
-  --tools                 Start with tool calls shown.
-  --top                   Open at the oldest prompt shown, not the latest.
-  --screenshot=<file.png> Write a picture of the app to the file, then exit.
-  --size=<W>x<H>          The size of that picture (default 1540x880).
-  --wait=<seconds>        Take the picture this long after the app has loaded.
-''';
-
 /// What the command line asks the app to open, and whether to write a
 /// screenshot of it and exit.
 class LaunchOptions {
@@ -32,7 +18,22 @@ class LaunchOptions {
     this.wait = Duration.zero,
   });
 
-  /// Exits with the usage text if an argument is not understood.
+  static const usage = '''
+Usage: tncode [options]
+
+  --session=<id>|latest   Show only this session (an id or the start of one).
+  --project=<name>        Open at the latest session of this project (the
+                          name of its directory).
+  --notes=<file>          Keep the notes in this file, not the usual one.
+  --tools                 Start with tool calls shown.
+  --top                   Open at the oldest prompt shown, not the latest.
+  --screenshot=<file.png> Write a picture of the app to the file, then exit.
+  --size=<W>x<H>          The size of that picture (default 1540x880).
+  --wait=<seconds>        Take the picture this long after the app has loaded.
+''';
+
+  /// Parses [args], throwing a [FormatException] if an argument is not
+  /// understood.
   factory LaunchOptions.parse(List<String> args) {
     String? session, project, notes, screenshot;
     var showTools = false, openAtTop = false;
@@ -65,8 +66,7 @@ class LaunchOptions {
       } else if (arg == '--top') {
         openAtTop = true;
       } else {
-        stderr.write('tncode: cannot use argument "$arg"\n\n$_usage');
-        exit(64);
+        throw FormatException('cannot use argument "$arg"');
       }
     }
     return LaunchOptions(
