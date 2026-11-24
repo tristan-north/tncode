@@ -275,6 +275,9 @@ class _NotesSidebarState extends State<NotesSidebar> {
   /// The note whose text is being changed.
   Note? _editing;
 
+  /// The note that is being dragged to another place.
+  final _dragged = ValueNotifier<Note?>(null);
+
   @override
   void didUpdateWidget(NotesSidebar old) {
     super.didUpdateWidget(old);
@@ -284,6 +287,7 @@ class _NotesSidebarState extends State<NotesSidebar> {
   @override
   void dispose() {
     _addField.dispose();
+    _dragged.dispose();
     _hideGrabCursor();
     if (_dropTimer != null) {
       _dropTimer!.cancel();
@@ -509,8 +513,12 @@ class _NotesSidebarState extends State<NotesSidebar> {
       padding: const EdgeInsets.only(bottom: 8),
       buildDefaultDragHandles: false,
       itemCount: todo.length,
-      onReorderStart: (_) => _showGrabCursor(),
+      onReorderStart: (i) {
+        _dragged.value = todo[i];
+        _showGrabCursor();
+      },
       onReorderEnd: (_) {
+        _dragged.value = null;
         _hideGrabCursor();
         _hurryDrop();
       },
@@ -576,6 +584,7 @@ class _NotesSidebarState extends State<NotesSidebar> {
       note: note,
       index: index,
       editing: identical(note, _editing),
+      dragged: _dragged,
       saved: notes.saved.contains(note) ? notes.savedAt : null,
       onToggle: () => notes.setDone(widget.project, note, note.done == null),
       onEdit: () => setState(() => _editing = note),
@@ -594,6 +603,7 @@ class _NoteRow extends StatefulWidget {
     required this.note,
     required this.index,
     required this.editing,
+    required this.dragged,
     required this.saved,
     required this.onToggle,
     required this.onEdit,
@@ -607,6 +617,10 @@ class _NoteRow extends StatefulWidget {
   /// cannot be dragged to another place.
   final int? index;
   final bool editing;
+
+  /// The note that is being dragged, if one is. While it is, it alone is
+  /// drawn as the pointer's, whichever notes the pointer passes over.
+  final ValueNotifier<Note?> dragged;
 
   /// When the note was saved to the file, if the last change was to it.
   final DateTime? saved;
@@ -661,6 +675,7 @@ class _NoteRowState extends State<_NoteRow>
   @override
   void initState() {
     super.initState();
+    widget.dragged.addListener(_dragChanged);
     // A row is also made when the done notes are unfolded, which may be long
     // after its note was saved.
     final saved = widget.saved;
@@ -678,8 +693,11 @@ class _NoteRowState extends State<_NoteRow>
     }
   }
 
+  void _dragChanged() => setState(() {});
+
   @override
   void dispose() {
+    widget.dragged.removeListener(_dragChanged);
     _flash.dispose();
     super.dispose();
   }
@@ -690,6 +708,10 @@ class _NoteRowState extends State<_NoteRow>
     final note = widget.note;
     final done = note.done != null;
     final index = widget.index;
+    final dragged = widget.dragged.value;
+    final lit =
+        !widget.editing &&
+        (dragged == null ? _hovered : identical(dragged, note));
     // The whole style, with what the text around it gives, since the box
     // that the text is changed in would fill in the rest of a partial style
     // from another one, with other letter spacing.
@@ -701,9 +723,7 @@ class _NoteRowState extends State<_NoteRow>
       onExit: (_) => setState(() => _hovered = false),
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: _hovered && !widget.editing
-              ? colors.surfaceContainerHigh
-              : colors.surfaceBright,
+          color: lit ? colors.surfaceContainerHigh : colors.surfaceBright,
           borderRadius: _radius,
         ),
         child: Padding(
@@ -765,7 +785,7 @@ class _NoteRowState extends State<_NoteRow>
               // The button keeps its room when it is not shown, so that the
               // text is not laid out again as the pointer passes.
               Visibility.maintain(
-                visible: _hovered && !widget.editing,
+                visible: lit,
                 child: Tooltip(
                   message: 'Delete',
                   child: InkResponse(
